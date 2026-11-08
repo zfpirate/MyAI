@@ -40,6 +40,8 @@ class ChatQueueTests(unittest.TestCase):
 
                 self.assertTrue(window.message_input.isEnabled())
                 self.assertTrue(window.send_button.isEnabled())
+                self.assertFalse(window.thinking_panel.isHidden())
+                self.assertEqual(window.chat_badge.text(), "● EN COURS")
 
                 window.message_input.setText("deuxième")
                 window.send_message()
@@ -58,6 +60,8 @@ class ChatQueueTests(unittest.TestCase):
 
             self.assertIsNone(window.worker)
             self.assertEqual(list(window.pending_messages), [])
+            self.assertTrue(window.thinking_panel.isHidden())
+            self.assertEqual(window.chat_badge.text(), "● PRÊTE")
             self.assertEqual(calls, ["premier", "deuxième"])
             transcript = window.chat.toPlainText()
             self.assertIn("CAPRI : Réponse premier", transcript)

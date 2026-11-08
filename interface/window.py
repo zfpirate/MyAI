@@ -26,89 +26,135 @@ from routines.manager import (
 
 STYLE = """
 QMainWindow, QWidget {
-    background-color: #F3F7FC;
-    color: #193451;
+    background-color: #F5F7FB;
+    color: #202B3C;
     font-family: 'Segoe UI';
     font-size: 13px;
 }
 
 QFrame#Sidebar {
-    background-color: #FFFFFF;
-    border-right: 1px solid #DCE7F2;
+    background-color: #111827;
+    border-right: 1px solid #263244;
 }
 
 QFrame#Panel {
     background-color: #FFFFFF;
-    border: 1px solid #DCE7F2;
-    border-radius: 14px;
+    border: 1px solid #E5EAF2;
+    border-radius: 18px;
 }
 
 QLabel#Title {
-    font-size: 23px;
+    font-size: 25px;
     font-weight: bold;
-    color: #173C63;
+    color: #17243A;
 }
 
 QLabel#Section {
-    font-size: 15px;
+    font-size: 16px;
     font-weight: bold;
-    color: #244E77;
+    color: #243650;
 }
 
 QLabel#Muted {
-    color: #8297AB;
+    color: #8A98AB;
     font-size: 11px;
 }
 
 QPushButton {
-    background-color: #EAF3FC;
-    color: #275B89;
+    background-color: #F0F4FA;
+    color: #31445F;
     border: none;
-    border-radius: 9px;
-    padding: 11px;
+    border-radius: 10px;
+    padding: 12px;
     text-align: left;
 }
 
 QPushButton:hover {
-    background-color: #D9EAFB;
+    background-color: #E4ECF7;
+}
+
+QPushButton#NavItem {
+    background-color: transparent;
+    color: #AEB9C9;
+    padding: 13px 15px;
+    font-weight: 600;
+}
+
+QPushButton#NavItem:hover {
+    background-color: #202B3B;
+    color: #FFFFFF;
+}
+
+QPushButton#NavItem:checked {
+    background-color: #293A55;
+    color: #FFFFFF;
+    border-left: 3px solid #68A7FF;
 }
 
 QPushButton#Send {
-    background-color: #267BC1;
+    background-color: #3978E5;
     color: white;
     font-weight: bold;
-    padding: 12px 20px;
+    padding: 13px 22px;
 }
 
 QPushButton#Send:hover {
-    background-color: #1768AC;
+    background-color: #2867D4;
 }
 
 QLineEdit {
     background-color: #FFFFFF;
-    border: 1px solid #D3E2F0;
-    border-radius: 10px;
-    padding: 13px;
-    color: #193451;
+    border: 1px solid #DCE3ED;
+    border-radius: 12px;
+    padding: 14px;
+    color: #202B3C;
+}
+
+QLineEdit:focus {
+    border: 1px solid #6B9AF0;
 }
 
 QTextBrowser, QListWidget {
     background-color: #FFFFFF;
     border: none;
-    color: #193451;
-    padding: 8px;
+    color: #202B3C;
+    padding: 12px;
+}
+
+QFrame#ThinkingPanel {
+    background-color: #F3F7FF;
+    border: 1px solid #E3ECFC;
+    border-radius: 12px;
+}
+
+QLabel#ThinkingText {
+    color: #42669E;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QProgressBar#ThinkingProgress {
+    background-color: #E4ECF8;
+    border: none;
+    border-radius: 2px;
+    max-height: 4px;
+}
+
+QProgressBar#ThinkingProgress::chunk {
+    background-color: #5B8DEF;
+    border-radius: 2px;
 }
 
 QProgressBar {
-    background-color: #E8F0F8;
+    background-color: #E8EDF4;
     border: none;
     border-radius: 5px;
-    height: 9px;
+    height: 8px;
     text-align: center;
 }
 
 QProgressBar::chunk {
-    background-color: #3695DC;
+    background-color: #6293E8;
     border-radius: 5px;
 }
 """
@@ -166,6 +212,10 @@ class CapriWindow(QMainWindow):
         self.timer.timeout.connect(self.refresh_system)
         self.timer.start(2000)
 
+        self.thinking_timer = QTimer(self)
+        self.thinking_timer.timeout.connect(self.animate_thinking_label)
+        self.thinking_dots = 0
+
     def setup_ui(self):
 
         central = QWidget()
@@ -186,9 +236,11 @@ class CapriWindow(QMainWindow):
 
         logo = QLabel("C A P R I")
         logo.setObjectName("Title")
+        logo.setStyleSheet("color:#F4F7FC;font-size:23px;")
 
         subtitle = QLabel("PERSONAL AI SYSTEM")
         subtitle.setObjectName("Muted")
+        subtitle.setStyleSheet("color:#8593A7;font-size:10px;")
 
         side_layout.addWidget(logo)
         side_layout.addWidget(subtitle)
@@ -198,6 +250,9 @@ class CapriWindow(QMainWindow):
 
         for name in ["Chat", "Mémoire", "Projets", "Routines"]:
             button = QPushButton(name)
+            button.setObjectName("NavItem")
+            button.setCheckable(True)
+            button.setChecked(name == "Chat")
             button.clicked.connect(
                 lambda checked=False, n=name: self.show_page(n)
             )
@@ -261,21 +316,58 @@ class CapriWindow(QMainWindow):
         chat_panel.setObjectName("Panel")
 
         chat_layout = QVBoxLayout(chat_panel)
-        chat_layout.setContentsMargins(18, 18, 18, 18)
+        chat_layout.setContentsMargins(20, 20, 20, 18)
+        chat_layout.setSpacing(14)
 
-        chat_title = QLabel("Conversation avec CAPRI")
+        title_row = QHBoxLayout()
+        chat_title = QLabel("Conversation")
         chat_title.setObjectName("Section")
+
+        chat_subtitle = QLabel("Ton assistante personnelle")
+        chat_subtitle.setObjectName("Muted")
+        title_column = QVBoxLayout()
+        title_column.setSpacing(3)
+        title_column.addWidget(chat_title)
+        title_column.addWidget(chat_subtitle)
+        title_row.addLayout(title_column)
+        title_row.addStretch()
+        self.chat_badge = QLabel("● PRÊTE")
+        self.chat_badge.setStyleSheet(
+            "color:#18866B;background:#EAF7F2;border-radius:9px;"
+            "padding:6px 10px;font-size:10px;font-weight:bold;"
+        )
+        title_row.addWidget(self.chat_badge)
 
         self.chat = QTextBrowser()
         self.chat.setOpenExternalLinks(True)
+        self.chat.setFrameShape(QFrame.Shape.NoFrame)
+        self.chat.document().setDocumentMargin(12)
 
         self.chat.append(
-            "<h2 style='color:#267BC1'>Bonjour !</h2>"
-            "<p>CAPRI est opérationnel. "
-            "Comment puis-je vous aider ?</p>"
+            "<div style='padding:14px 18px;background:#F3F7FF;"
+            "border-radius:14px;color:#31445F'>"
+            "<b style='color:#3978E5;font-size:16px'>Bonjour !</b><br>"
+            "CAPRI est prête. Que souhaites-tu faire ?"
+            "</div>"
         )
 
+        self.thinking_panel = QFrame()
+        self.thinking_panel.setObjectName("ThinkingPanel")
+        thinking_layout = QVBoxLayout(self.thinking_panel)
+        thinking_layout.setContentsMargins(12, 8, 12, 8)
+        thinking_layout.setSpacing(6)
+        self.thinking_label = QLabel("CAPRI réfléchit")
+        self.thinking_label.setObjectName("ThinkingText")
+        self.thinking_progress = QProgressBar()
+        self.thinking_progress.setObjectName("ThinkingProgress")
+        self.thinking_progress.setRange(0, 0)
+        self.thinking_progress.setTextVisible(False)
+        thinking_layout.addWidget(self.thinking_label)
+        thinking_layout.addWidget(self.thinking_progress)
+        self.thinking_panel.hide()
+
         input_layout = QHBoxLayout()
+        input_layout.setSpacing(10)
 
         self.message_input = QLineEdit()
         self.message_input.setPlaceholderText(
@@ -292,8 +384,11 @@ class CapriWindow(QMainWindow):
         input_layout.addWidget(self.message_input, 1)
         input_layout.addWidget(self.send_button)
 
-        chat_layout.addWidget(chat_title)
+        title_container = QWidget()
+        title_container.setLayout(title_row)
+        chat_layout.addWidget(title_container)
         chat_layout.addWidget(self.chat, 1)
+        chat_layout.addWidget(self.thinking_panel)
         chat_layout.addLayout(input_layout)
 
         # SYSTEM PANEL
@@ -548,21 +643,67 @@ class CapriWindow(QMainWindow):
         self.startup_worker = None
 
     def show_page(self, name):
+        page_indexes = {
+            "Chat": 0,
+            "Mémoire": 1,
+            "Projets": 2,
+            "Routines": 3,
+        }
+        if name not in page_indexes:
+            return
 
-        if name == "Chat":
-            self.pages.setCurrentIndex(0)
+        self.pages.setCurrentIndex(page_indexes[name])
+        for button in self.nav_buttons:
+            button.setChecked(button.text() == name)
 
-        elif name == "Mémoire":
-            self.pages.setCurrentIndex(1)
+        if name == "Mémoire":
             self.refresh_memories()
 
         elif name == "Projets":
-            self.pages.setCurrentIndex(2)
             self.refresh_projects()
 
         elif name == "Routines":
-            self.pages.setCurrentIndex(3)
             self.refresh_routines()
+
+    def set_thinking(self, active, queued=0):
+        if active:
+            suffix = (
+                f" · {queued} message(s) en attente"
+                if queued
+                else ""
+            )
+            self.thinking_label.setText(
+                f"CAPRI réfléchit{'.' * self.thinking_dots}{suffix}"
+            )
+            self.thinking_panel.show()
+            self.chat_badge.setText("● EN COURS")
+            self.chat_badge.setStyleSheet(
+                "color:#396CC1;background:#EDF3FF;border-radius:9px;"
+                "padding:6px 10px;font-size:10px;font-weight:bold;"
+            )
+            self.status.setText("● CAPRI RÉFLÉCHIT")
+            self.status.setStyleSheet(
+                "color:#396CC1;font-weight:bold;"
+            )
+            if not self.thinking_timer.isActive():
+                self.thinking_timer.start(450)
+        else:
+            self.thinking_panel.hide()
+            self.chat_badge.setText("● PRÊTE")
+            self.chat_badge.setStyleSheet(
+                "color:#18866B;background:#EAF7F2;border-radius:9px;"
+                "padding:6px 10px;font-size:10px;font-weight:bold;"
+            )
+            self.status.setText("● CAPRI ONLINE")
+            self.status.setStyleSheet(
+                "color:#18866B;font-weight:bold;"
+            )
+            self.thinking_timer.stop()
+            self.thinking_dots = 0
+
+    def animate_thinking_label(self):
+        self.thinking_dots = (self.thinking_dots + 1) % 4
+        self.set_thinking(True, len(self.pending_messages))
 
     def send_message(self):
 
@@ -580,10 +721,7 @@ class CapriWindow(QMainWindow):
         self.pending_messages.append(message)
 
         if self.worker is not None:
-            self.status.setText(
-                f"● CAPRI RÉFLÉCHIT "
-                f"({len(self.pending_messages)} message(s) en attente)"
-            )
+            self.set_thinking(True, len(self.pending_messages))
             return
 
         self.start_next_message()
@@ -593,7 +731,7 @@ class CapriWindow(QMainWindow):
             return
 
         message = self.pending_messages.popleft()
-        self.status.setText("● CAPRI RÉFLÉCHIT")
+        self.set_thinking(True, len(self.pending_messages))
         self.worker = AIWorker(message)
         self.worker.finished_response.connect(
             self.display_response
@@ -611,7 +749,7 @@ class CapriWindow(QMainWindow):
             self.start_next_message()
             return
 
-        self.status.setText("● CAPRI ONLINE")
+        self.set_thinking(False)
 
     def display_response(self, answer):
 
@@ -626,8 +764,6 @@ class CapriWindow(QMainWindow):
             f"<p style='color:#D94B4B'>Erreur : "
             f"{to_html(error)}</p>"
         )
-
-        self.status.setText("● CAPRI ONLINE")
 
     def refresh_system(self):
 
