@@ -35,6 +35,18 @@ Lancez ensuite l’application :
 python main.py
 ```
 
+## Routines de démarrage
+
+Dans l’onglet **Routines**, saisissez les applications à ouvrir, par exemple
+`Spotify et Riot Client`, puis créez la routine. Vous pouvez aussi demander dans
+le chat : `Quand CAPRI démarre, ouvre Spotify et Riot Client`.
+
+Les routines sont enregistrées localement dans la base de données et lancées
+au prochain démarrage de CAPRI. Vous pouvez les activer, les désactiver ou les
+supprimer depuis l’onglet **Routines**. Une routine ne contourne pas les
+permissions : toute action nécessitant une confirmation n’est pas approuvée
+automatiquement.
+
 ## Données locales
 
 La mémoire de l’application est conservée dans `data/capri.db`. Cette base est

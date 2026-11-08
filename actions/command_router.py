@@ -102,6 +102,18 @@ MULTI_ACTION_SEPARATOR = re.compile(
     r"\s+(?:et\s+apres|puis|ensuite|apres|et)\s+"
 )
 
+STARTUP_ROUTINE_PATTERNS = [
+    r"^(?:quand|lorsque)\s+(?:capri|elle|tu)\s+(?:se\s+)?"
+    r"(?:lance|demarre)(?:\s+au\s+demarrage)?\s*"
+    r"(?:elle\s+)?(?:ouvre|lance|demarre)\s+",
+    r"^(?:au\s+demarrage(?:\s+de\s+capri)?|"
+    r"au\s+lancement(?:\s+de\s+capri)?)\s*"
+    r"(?:ouvre|lance|demarre)\s+",
+    r"^(?:cree|creer|ajoute|ajouter)\s+(?:une\s+)?routine\s+"
+    r"(?:au\s+demarrage\s*)?(?:quand\s+capri\s+demarre\s*)?"
+    r"(?:ouvre|lance|demarre)\s+",
+]
+
 
 def normalize(text):
     """Normalise un texte pour faciliter sa compréhension."""
@@ -212,6 +224,50 @@ def extract_multiple_queries_from_close(message):
             queries.append(query)
 
     return queries
+
+
+def create_startup_routine_command(message):
+    """Crée une routine persistante à partir d'une demande de démarrage."""
+    normalized = normalize(message)
+
+    app_text = None
+    for pattern in STARTUP_ROUTINE_PATTERNS:
+        match = re.match(pattern, normalized)
+        if match:
+            app_text = normalized[match.end():].strip()
+            break
+
+    if not app_text:
+        return None
+
+    queries = extract_multiple_queries("ouvre " + app_text)
+    if not queries:
+        return "Quelle application veux-tu ajouter à la routine ?"
+
+    apps = []
+    for query in queries:
+        result = find_application(query)
+        if result["status"] == "not_found":
+            return f"❌ {query} : application non reconnue."
+        if result["status"] == "ambiguous":
+            names = ", ".join(app["name"] for app in result["matches"])
+            return f"❓ {query} : plusieurs possibilités ({names})."
+        apps.append(result["app"])
+
+    app_names = list(dict.fromkeys(app["name"] for app in apps))
+    routine_name = "Au démarrage : " + " et ".join(app_names)
+
+    from routines.manager import save_startup_routine
+
+    save_startup_routine(
+        routine_name,
+        [app["app_id"] for app in apps],
+    )
+
+    return (
+        f"✅ Routine « {routine_name} » créée et activée. "
+        "Elle s'exécutera au prochain démarrage de CAPRI."
+    )
 
 
 def is_open_command(message):
@@ -408,6 +464,12 @@ def launch_one_application(query):
     )
 
     if launch_result["status"] == "success":
+        launch_details = launch_result["result"]
+        if launch_details.get("status") == "launched_not_tracked":
+            return (
+                f"⚠️ {app['name']} : application ouverte, mais CAPRI "
+                "n'a pas pu vérifier sa fenêtre. Elle ne sera pas fermée."
+            )
         return f"✅ {app['name']} : ouverture demandée."
 
     if launch_result["status"] == "confirmation_required":
@@ -459,6 +521,22 @@ def close_one_application(query):
     )
 
     if close_result["status"] == "success":
+        close_details = close_result["result"]
+        if close_details["status"] in {
+            "hidden_in_background",
+            "closed_in_background",
+        }:
+            return (
+                f"✅ {app['name']} : fenêtre fermée, mais l'application "
+                "reste active en arrière-plan."
+            )
+        if close_details["status"] == "still_open":
+            return (
+                f"⚠️ {app['name']} : la demande de fermeture a été envoyée, "
+                "mais sa fenêtre est toujours ouverte."
+            )
+        if close_details["status"] == "closed":
+            return f"✅ {app['name']} : fenêtre fermée."
         return f"✅ {app['name']} : fermeture demandée."
 
     if close_result["status"] == "confirmation_required":
@@ -615,6 +693,10 @@ def extract_browser_and_research(message):
 
 def route_command(message):
     """Dirige les commandes d'ouverture et de fermeture."""
+
+    routine_result = create_startup_routine_command(message)
+    if routine_result is not None:
+        return routine_result
 
     # Fermeture d'applications.
     if is_close_command(message):

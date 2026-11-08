@@ -2,18 +2,26 @@ import sys
 import html
 import subprocess
 import psutil
+from collections import deque
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel,
     QPushButton, QLineEdit, QTextBrowser,
     QVBoxLayout, QHBoxLayout, QFrame,
-    QProgressBar, QStackedWidget, QListWidget
+    QProgressBar, QStackedWidget, QListWidget, QListWidgetItem
 )
 
 from core.brain import ask_capri
+from actions.app_catalog import get_catalog_apps, scan_installed_apps
 from memory.database import list_memories
 from memory.projects import get_projects
+from routines.manager import (
+    delete_routine,
+    list_routines,
+    run_startup_routines,
+    set_routine_enabled,
+)
 
 
 STYLE = """
@@ -127,6 +135,17 @@ class AIWorker(QThread):
             self.failed.emit(str(error))
 
 
+class StartupRoutineWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def run(self):
+        try:
+            self.completed.emit(run_startup_routines())
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
 class CapriWindow(QMainWindow):
 
     def __init__(self):
@@ -137,6 +156,8 @@ class CapriWindow(QMainWindow):
         self.setMinimumSize(1100, 700)
 
         self.worker = None
+        self.pending_messages = deque()
+        self.startup_worker = None
 
         self.setup_ui()
         self.refresh_system()
@@ -175,7 +196,7 @@ class CapriWindow(QMainWindow):
 
         self.nav_buttons = []
 
-        for name in ["Chat", "Mémoire", "Projets"]:
+        for name in ["Chat", "Mémoire", "Projets", "Routines"]:
             button = QPushButton(name)
             button.clicked.connect(
                 lambda checked=False, n=name: self.show_page(n)
@@ -218,9 +239,11 @@ class CapriWindow(QMainWindow):
         self.chat_page = self.create_chat_page()
         self.memory_page = self.create_list_page("memory_list")
         self.projects_page = self.create_list_page("project_list")
+        self.routines_page = self.create_routines_page()
         self.pages.addWidget(self.chat_page)
         self.pages.addWidget(self.memory_page)
         self.pages.addWidget(self.projects_page)
+        self.pages.addWidget(self.routines_page)
 
         content_layout.addWidget(self.pages)
 
@@ -335,8 +358,194 @@ class CapriWindow(QMainWindow):
 
         panel_layout.addWidget(widget)
         layout.addWidget(panel)
-
         return page
+
+    def create_routines_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(14)
+
+        title = QLabel("Routines")
+        title.setObjectName("Title")
+        layout.addWidget(title)
+
+        description = QLabel(
+            "Crée des actions qui se déclenchent au démarrage de CAPRI. "
+            "Exemple : « Quand CAPRI démarre, ouvre Spotify et Riot Client »."
+        )
+        description.setObjectName("Muted")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        input_layout = QHBoxLayout()
+        self.routine_input = QLineEdit()
+        self.routine_input.setPlaceholderText(
+            "Spotify et Riot Client"
+        )
+        self.routine_input.returnPressed.connect(self.create_routine)
+        create_button = QPushButton("Créer la routine")
+        create_button.clicked.connect(self.create_routine)
+        input_layout.addWidget(self.routine_input, 1)
+        input_layout.addWidget(create_button)
+        layout.addLayout(input_layout)
+
+        self.routine_status = QLabel("")
+        self.routine_status.setWordWrap(True)
+        layout.addWidget(self.routine_status)
+
+        self.routine_list = QListWidget()
+        layout.addWidget(self.routine_list, 1)
+
+        action_layout = QHBoxLayout()
+        self.routine_toggle_button = QPushButton("Activer / désactiver")
+        self.routine_toggle_button.clicked.connect(
+            self.toggle_selected_routine
+        )
+        delete_button = QPushButton("Supprimer")
+        delete_button.clicked.connect(self.delete_selected_routine)
+        action_layout.addWidget(self.routine_toggle_button)
+        action_layout.addWidget(delete_button)
+        layout.addLayout(action_layout)
+
+        self.refresh_routines()
+        return page
+
+    def refresh_routines(self):
+        if not hasattr(self, "routine_list"):
+            return
+
+        self.routine_list.clear()
+        apps_by_id = {
+            app["app_id"]: app["name"]
+            for app in get_catalog_apps()
+        }
+
+        for routine in list_routines():
+            app_names = [
+                apps_by_id.get(app_id, "Application indisponible")
+                for app_id in routine["app_ids"]
+            ]
+            state = "Activée" if routine["enabled"] else "Désactivée"
+            item = QListWidgetItem(
+                f"{routine['name']} — {', '.join(app_names)} ({state})"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, routine["id"])
+            self.routine_list.addItem(item)
+
+    def create_routine(self):
+        text = self.routine_input.text().strip()
+        if not text:
+            return
+
+        from actions.command_router import create_startup_routine_command
+
+        result = create_startup_routine_command(text)
+        if result is None:
+            result = create_startup_routine_command(
+                "Au démarrage, ouvre " + text
+            )
+
+        self.routine_status.setText(
+            result or "Impossible de comprendre cette routine."
+        )
+        if result and result.startswith("✅"):
+            self.routine_input.clear()
+            self.refresh_routines()
+
+    def selected_routine(self):
+        item = self.routine_list.currentItem()
+        if item is None:
+            self.routine_status.setText("Sélectionne d'abord une routine.")
+            return None
+
+        routine_id = item.data(Qt.ItemDataRole.UserRole)
+        return next(
+            (
+                routine for routine in list_routines()
+                if routine["id"] == routine_id
+            ),
+            None,
+        )
+
+    def toggle_selected_routine(self):
+        routine = self.selected_routine()
+        if routine is None:
+            return
+
+        set_routine_enabled(routine["id"], not routine["enabled"])
+        self.refresh_routines()
+        self.routine_status.setText("État de la routine mis à jour.")
+
+    def delete_selected_routine(self):
+        routine = self.selected_routine()
+        if routine is None:
+            return
+
+        delete_routine(routine["id"])
+        self.refresh_routines()
+        self.routine_status.setText("Routine supprimée.")
+
+    def start_enabled_routines(self):
+        if self.startup_worker is not None:
+            return
+
+        self.startup_worker = StartupRoutineWorker()
+        self.startup_worker.completed.connect(
+            self.show_startup_routine_results
+        )
+        self.startup_worker.failed.connect(
+            self.show_startup_routine_error
+        )
+        self.startup_worker.finished.connect(
+            self.startup_worker.deleteLater
+        )
+        self.startup_worker.finished.connect(
+            self.clear_startup_worker
+        )
+        self.startup_worker.start()
+
+    def show_startup_routine_results(self, results):
+        apps_by_id = {
+            app["app_id"]: app["name"]
+            for app in get_catalog_apps()
+        }
+        for routine in results:
+            for application in routine["applications"]:
+                app_name = apps_by_id.get(
+                    application["app_id"],
+                    application["app_id"],
+                )
+                if application["status"] == "launched_not_tracked":
+                    message = (
+                        f"⚠️ Routine « {routine['name']} » : {app_name} "
+                        "a été lancée, mais sa fenêtre n'a pas été vérifiée."
+                    )
+                elif application["status"] not in {
+                    "launched_and_tracked",
+                    "reused_and_tracked",
+                    "opened",
+                }:
+                    message = (
+                        f"⚠️ Routine « {routine['name']} » : "
+                        f"{app_name} — {application['message']}"
+                    )
+                else:
+                    message = (
+                        f"✅ Routine « {routine['name']} » : "
+                        f"{app_name} ouvert."
+                    )
+                self.chat.append(
+                    f"<p>{to_html(message)}</p>"
+                )
+
+    def show_startup_routine_error(self, error):
+        self.chat.append(
+            f"<p style='color:#D94B4B'>"
+            f"Erreur de routine au démarrage : {to_html(error)}</p>"
+        )
+
+    def clear_startup_worker(self):
+        self.startup_worker = None
 
     def show_page(self, name):
 
@@ -351,14 +560,15 @@ class CapriWindow(QMainWindow):
             self.pages.setCurrentIndex(2)
             self.refresh_projects()
 
+        elif name == "Routines":
+            self.pages.setCurrentIndex(3)
+            self.refresh_routines()
+
     def send_message(self):
 
         message = self.message_input.text().strip()
 
         if not message:
-            return
-
-        if self.worker is not None and self.worker.isRunning():
             return
 
         self.chat.append(
@@ -367,10 +577,23 @@ class CapriWindow(QMainWindow):
         )
 
         self.message_input.clear()
-        self.message_input.setEnabled(False)
-        self.send_button.setEnabled(False)
-        self.status.setText("● CAPRI RÉFLÉCHIT")
+        self.pending_messages.append(message)
 
+        if self.worker is not None:
+            self.status.setText(
+                f"● CAPRI RÉFLÉCHIT "
+                f"({len(self.pending_messages)} message(s) en attente)"
+            )
+            return
+
+        self.start_next_message()
+
+    def start_next_message(self):
+        if self.worker is not None or not self.pending_messages:
+            return
+
+        message = self.pending_messages.popleft()
+        self.status.setText("● CAPRI RÉFLÉCHIT")
         self.worker = AIWorker(message)
         self.worker.finished_response.connect(
             self.display_response
@@ -381,8 +604,14 @@ class CapriWindow(QMainWindow):
         self.worker.start()
 
     def on_worker_finished(self):
-        # Évite de garder une référence vers un objet déjà détruit
+        # Le worker terminé est remplacé seulement après la fin de son thread.
         self.worker = None
+
+        if self.pending_messages:
+            self.start_next_message()
+            return
+
+        self.status.setText("● CAPRI ONLINE")
 
     def display_response(self, answer):
 
@@ -391,8 +620,6 @@ class CapriWindow(QMainWindow):
             f"{to_html(answer)}</p>"
         )
 
-        self.finish_request()
-
     def display_error(self, error):
 
         self.chat.append(
@@ -400,14 +627,7 @@ class CapriWindow(QMainWindow):
             f"{to_html(error)}</p>"
         )
 
-        self.finish_request()
-
-    def finish_request(self):
-
-        self.message_input.setEnabled(True)
-        self.send_button.setEnabled(True)
         self.status.setText("● CAPRI ONLINE")
-        self.message_input.setFocus()
 
     def refresh_system(self):
 
@@ -469,11 +689,13 @@ class CapriWindow(QMainWindow):
 
 def launch():
 
+    scan_installed_apps()
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLE)
 
     window = CapriWindow()
     window.show()
+    QTimer.singleShot(800, window.start_enabled_routines)
 
     sys.exit(app.exec())
 

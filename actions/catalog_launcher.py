@@ -14,7 +14,11 @@ from actions.app_catalog import get_catalog_app, START_MENU_LOCATIONS
 from actions.applications import (
     open_application,
     get_visible_windows,
+    is_trackable_application_window,
     get_process_path,
+    is_catalog_process_path,
+    verify_catalog_process,
+    show_tracked_window,
     register_catalog_window,
     close_catalog_window,
 )
@@ -231,8 +235,8 @@ def launch_catalog_application(params):
 
     # Photographier les fenêtres avant le lancement.
     previous_windows = {
-        window["hwnd"]
-        for window in get_visible_windows()
+        window["hwnd"]: window["pid"]
+        for window in get_visible_windows(include_hidden=True)
     }
 
     process = subprocess.Popen(
@@ -249,15 +253,16 @@ def launch_catalog_application(params):
         os.path.abspath(str(inspected["target"]))
     )
 
-    # Chercher une nouvelle fenêtre appartenant exactement
-    # à l'exécutable vérifié.
+    # Une application peut démarrer une version dans un sous-dossier
+    # ou réutiliser une fenêtre déjà ouverte.
     deadline = time.monotonic() + 10
 
     while time.monotonic() < deadline:
-        for window in get_visible_windows():
+        candidates = []
+        for window in get_visible_windows(include_hidden=True):
             hwnd = window["hwnd"]
 
-            if hwnd in previous_windows:
+            if not is_trackable_application_window(window):
                 continue
 
             actual_path = get_process_path(window["pid"])
@@ -265,26 +270,53 @@ def launch_catalog_application(params):
             if not actual_path:
                 continue
 
-            actual_path = os.path.normcase(
-                os.path.abspath(actual_path)
-            )
-
-            if actual_path != expected_path:
+            if not is_catalog_process_path(
+                actual_path,
+                expected_path,
+            ):
                 continue
 
-            register_catalog_window(
+            signature_result = verify_catalog_process(
+                actual_path,
+                signature["publisher"],
+                name,
+            )
+            if not signature_result:
+                continue
+
+            candidates.append(window)
+
+        candidates.sort(
+            key=lambda window: (
+                not window.get("visible", True),
+                previous_windows.get(window["hwnd"]) == window["pid"]
+            )
+        )
+
+        for window in candidates:
+            hwnd = window["hwnd"]
+            entry = register_catalog_window(
                 app_id,
                 hwnd,
                 expected_path,
                 name,
+                signature["publisher"],
             )
 
+            show_tracked_window(hwnd)
+
+            reused = previous_windows.get(hwnd) == entry["pid"]
             return {
                 "application": name,
-                "process_id": process.pid,
+                "process_id": entry["pid"],
+                "launch_process_id": process.pid,
                 "window_id": hwnd,
                 "publisher": signature["publisher"],
-                "status": "launched_and_tracked",
+                "status": (
+                    "reused_and_tracked"
+                    if reused
+                    else "launched_and_tracked"
+                ),
             }
 
         time.sleep(0.2)
