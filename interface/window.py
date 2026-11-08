@@ -25,11 +25,19 @@ from routines.manager import (
 
 
 STYLE = """
-QMainWindow, QWidget {
+QMainWindow {
     background-color: #F5F7FB;
+}
+
+QWidget {
     color: #202B3C;
     font-family: 'Segoe UI';
     font-size: 13px;
+    background-color: transparent;
+}
+
+QWidget#Central {
+    background-color: #F5F7FB;
 }
 
 QFrame#Sidebar {
@@ -56,7 +64,7 @@ QLabel#Section {
 }
 
 QLabel#Muted {
-    color: #8A98AB;
+    color: #718198;
     font-size: 11px;
 }
 
@@ -219,6 +227,7 @@ class CapriWindow(QMainWindow):
     def setup_ui(self):
 
         central = QWidget()
+        central.setObjectName("Central")
         self.setCentralWidget(central)
 
         main_layout = QHBoxLayout(central)
@@ -263,6 +272,7 @@ class CapriWindow(QMainWindow):
 
         version = QLabel("CAPRI v0.2\nLOCAL SYSTEM")
         version.setObjectName("Muted")
+        version.setStyleSheet("color:#AEB9C9;")
         side_layout.addWidget(version)
 
         # CONTENT
