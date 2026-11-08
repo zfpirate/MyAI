@@ -1,0 +1,7 @@
+PySide6
+beautifulsoup4
+ddgs
+ollama
+psutil
+pywin32
+requests
