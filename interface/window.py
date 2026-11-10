@@ -3,18 +3,21 @@ import html
 import subprocess
 import psutil
 from collections import deque
+from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QAction
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel,
     QPushButton, QLineEdit, QTextBrowser,
     QVBoxLayout, QHBoxLayout, QFrame,
     QProgressBar, QStackedWidget, QListWidget, QListWidgetItem,
-    QCheckBox, QMenu, QSystemTrayIcon, QStyle,
+    QCheckBox, QMenu, QSystemTrayIcon, QStyle, QMessageBox,
 )
 
+from core.app_info import APP_VERSION, GITHUB_REPOSITORY, resource_path
 from core.brain import ask_capri
+from core.github_updater import check_for_updates, download_and_install_update
 from actions.app_catalog import get_catalog_apps, scan_installed_apps
 from memory.database import list_memories
 from memory.projects import get_projects
@@ -208,6 +211,26 @@ class StartupRoutineWorker(QThread):
             self.failed.emit(str(error))
 
 
+class UpdateWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, mode, update=None):
+        super().__init__()
+        self.mode = mode
+        self.update = update
+
+    def run(self):
+        try:
+            if self.mode == "check":
+                result = check_for_updates()
+            else:
+                result = download_and_install_update(self.update)
+            self.completed.emit(result)
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
 class CapriWindow(QMainWindow):
 
     def __init__(self):
@@ -220,6 +243,7 @@ class CapriWindow(QMainWindow):
         self.worker = None
         self.pending_messages = deque()
         self.startup_worker = None
+        self.update_worker = None
         self.application_launch_triggers = {}
         self._active_trigger_processes = set()
         self._allow_close = False
@@ -243,6 +267,9 @@ class CapriWindow(QMainWindow):
         self.thinking_dots = 0
 
     def setup_ui(self):
+        icon_path = resource_path(Path("assets") / "icons" / "capri.png")
+        if icon_path.is_file():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
         central = QWidget()
         central.setObjectName("Central")
@@ -261,9 +288,21 @@ class CapriWindow(QMainWindow):
         side_layout.setContentsMargins(18, 25, 18, 20)
         side_layout.setSpacing(14)
 
+        logo_path = resource_path(Path("assets") / "images" / "capri-logo.png")
         logo = QLabel("C A P R I")
         logo.setObjectName("Title")
-        logo.setStyleSheet("color:#F4F7FC;font-size:23px;")
+        if logo_path.is_file():
+            logo.setPixmap(
+                QPixmap(str(logo_path)).scaled(
+                    175,
+                    60,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        else:
+            logo.setStyleSheet("color:#F4F7FC;font-size:23px;")
 
         subtitle = QLabel("PERSONAL AI SYSTEM")
         subtitle.setObjectName("Muted")
@@ -275,7 +314,13 @@ class CapriWindow(QMainWindow):
 
         self.nav_buttons = []
 
-        for name in ["Chat", "Mémoire", "Projets", "Routines"]:
+        for name in [
+            "Chat",
+            "Mémoire",
+            "Projets",
+            "Routines",
+            "Mises à jour",
+        ]:
             button = QPushButton(name)
             button.setObjectName("NavItem")
             button.setCheckable(True)
@@ -288,7 +333,7 @@ class CapriWindow(QMainWindow):
 
         side_layout.addStretch()
 
-        version = QLabel("CAPRI v0.2\nLOCAL SYSTEM")
+        version = QLabel(f"CAPRI v{APP_VERSION}\nLOCAL SYSTEM")
         version.setObjectName("Muted")
         version.setStyleSheet("color:#AEB9C9;")
         side_layout.addWidget(version)
@@ -323,10 +368,12 @@ class CapriWindow(QMainWindow):
         self.memory_page = self.create_list_page("memory_list")
         self.projects_page = self.create_list_page("project_list")
         self.routines_page = self.create_routines_page()
+        self.updates_page = self.create_updates_page()
         self.pages.addWidget(self.chat_page)
         self.pages.addWidget(self.memory_page)
         self.pages.addWidget(self.projects_page)
         self.pages.addWidget(self.routines_page)
+        self.pages.addWidget(self.updates_page)
 
         content_layout.addWidget(self.pages)
 
@@ -546,6 +593,42 @@ class CapriWindow(QMainWindow):
         self.refresh_routines()
         return page
 
+    def create_updates_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(14)
+
+        title = QLabel("Mises à jour")
+        title.setObjectName("Title")
+        layout.addWidget(title)
+
+        version = QLabel(f"Version installée : CAPRI {APP_VERSION}")
+        version.setObjectName("Section")
+        layout.addWidget(version)
+
+        description = QLabel(
+            "CAPRI vérifie les versions publiées sur GitHub. Les mises à "
+            "jour de la version Windows installée sont téléchargées et "
+            "vérifiées avant installation."
+        )
+        description.setObjectName("Muted")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self.update_status = QLabel("Aucune vérification effectuée.")
+        self.update_status.setWordWrap(True)
+        layout.addWidget(self.update_status)
+
+        self.update_button = QPushButton("Vérifier les mises à jour")
+        self.update_button.clicked.connect(self.check_for_updates)
+        layout.addWidget(self.update_button)
+
+        releases_button = QPushButton("Ouvrir les releases GitHub")
+        releases_button.clicked.connect(self.open_releases_page)
+        layout.addWidget(releases_button)
+        layout.addStretch()
+        return page
+
     def refresh_routines(self):
         if not hasattr(self, "routine_list"):
             return
@@ -681,11 +764,15 @@ class CapriWindow(QMainWindow):
     def setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setToolTip("CAPRI — routines actives")
-        self.tray_icon.setIcon(
-            self.style().standardIcon(
-                QStyle.StandardPixmap.SP_ComputerIcon
+        icon_path = resource_path(Path("assets") / "icons" / "capri.png")
+        if icon_path.is_file():
+            self.tray_icon.setIcon(QIcon(str(icon_path)))
+        else:
+            self.tray_icon.setIcon(
+                self.style().standardIcon(
+                    QStyle.StandardPixmap.SP_ComputerIcon
+                )
             )
-        )
 
         menu = QMenu(self)
         open_action = QAction("Ouvrir CAPRI", self)
@@ -873,12 +960,111 @@ class CapriWindow(QMainWindow):
     def clear_startup_worker(self):
         self.startup_worker = None
 
+    def open_releases_page(self, _checked=False):
+        QDesktopServices.openUrl(
+            QUrl(f"https://github.com/{GITHUB_REPOSITORY}/releases")
+        )
+
+    def check_for_updates(self, _checked=False):
+        if self.update_worker is not None:
+            return
+
+        self.update_status.setText("Vérification de GitHub en cours…")
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Vérification…")
+        self.update_worker = UpdateWorker("check")
+        self.update_worker.completed.connect(self.update_check_completed)
+        self.update_worker.failed.connect(self.update_check_failed)
+        self.update_worker.finished.connect(self.update_worker.deleteLater)
+        self.update_worker.finished.connect(self.clear_update_worker)
+        self.update_worker.start()
+
+    def update_check_completed(self, update):
+        self.update_button.setEnabled(True)
+        self.update_button.setText("Vérifier les mises à jour")
+
+        if update["status"] == "up_to_date":
+            self.update_status.setText(
+                f"CAPRI {APP_VERSION} est à jour "
+                f"(dernière version : {update['latest_version']})."
+            )
+            return
+
+        self.update_status.setText(
+            f"CAPRI {update['latest_version']} est disponible "
+            f"(version installée : {APP_VERSION})."
+        )
+        assets = update.get("assets", {})
+        has_windows_package = (
+            "CAPRI-windows-x64.zip" in assets
+            and "CAPRI-windows-x64.zip.sha256" in assets
+        )
+        if not getattr(sys, "frozen", False) or not has_windows_package:
+            self.update_status.setText(
+                self.update_status.text()
+                + " Télécharge le paquet Windows depuis GitHub."
+            )
+            if QMessageBox.question(
+                self,
+                "Mise à jour de CAPRI",
+                "Une nouvelle version est disponible. Ouvrir la page "
+                "GitHub pour la télécharger ?",
+            ) == QMessageBox.StandardButton.Yes:
+                QDesktopServices.openUrl(QUrl(update["release_url"]))
+            return
+
+        if QMessageBox.question(
+            self,
+            "Mise à jour de CAPRI",
+            f"Télécharger CAPRI {update['latest_version']} et "
+            "redémarrer l'application ?",
+        ) == QMessageBox.StandardButton.Yes:
+            self.start_update_install(update)
+
+    def update_check_failed(self, error):
+        self.update_button.setEnabled(True)
+        self.update_button.setText("Vérifier les mises à jour")
+        self.update_status.setText(
+            f"Impossible de vérifier les mises à jour : {error}"
+        )
+
+    def start_update_install(self, update):
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Téléchargement…")
+        self.update_status.setText(
+            f"Téléchargement sécurisé de CAPRI {update['latest_version']}…"
+        )
+        self.update_worker = UpdateWorker("install", update)
+        self.update_worker.completed.connect(self.update_install_completed)
+        self.update_worker.failed.connect(self.update_install_failed)
+        self.update_worker.finished.connect(self.update_worker.deleteLater)
+        self.update_worker.finished.connect(self.clear_update_worker)
+        self.update_worker.start()
+
+    def update_install_completed(self, result):
+        self.update_button.setText("Fermeture de CAPRI…")
+        self.update_status.setText(
+            f"CAPRI {result['version']} est téléchargée. "
+            "L'application va se fermer pour terminer la mise à jour."
+        )
+        self.tray_icon.hide()
+        QTimer.singleShot(500, QApplication.quit)
+
+    def update_install_failed(self, error):
+        self.update_button.setEnabled(True)
+        self.update_button.setText("Vérifier les mises à jour")
+        self.update_status.setText(f"Mise à jour annulée : {error}")
+
+    def clear_update_worker(self):
+        self.update_worker = None
+
     def show_page(self, name):
         page_indexes = {
             "Chat": 0,
             "Mémoire": 1,
             "Projets": 2,
             "Routines": 3,
+            "Mises à jour": 4,
         }
         if name not in page_indexes:
             return

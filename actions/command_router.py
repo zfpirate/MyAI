@@ -139,6 +139,14 @@ WINDOWS_STARTUP_ROUTINE_PATTERN = re.compile(
     r"\bau\s+demarrage\s+du\s+pc\b"
 )
 
+SET_RESOLUTION_PATTERN = re.compile(
+    r"^(?:capri\s+)?(?:mets?|mettre|change|regle|passe)\s+"
+    r"(?:(?:la|les)\s+)?(?:resolution|res)\s+"
+    r"(?:(?:en|a|sur)\s+)?"
+    r"(\d{3,5})(?:\s*(?:x|par|fois)\s*|\s+)(\d{3,5})"
+    r"(?:\s+pixels?)?$"
+)
+
 
 def normalize(text):
     """Normalise un texte pour faciliter sa compréhension."""
@@ -339,6 +347,44 @@ def create_application_launch_routine_command(message):
     return (
         f"✅ Routine « {routine_name} » créée et activée. "
         f"La résolution native sera appliquée quand {app['name']} démarre."
+    )
+
+
+def set_display_resolution_command(message):
+    """Applique une résolution demandée sans interroger le modèle ou le Web."""
+    normalized = normalize(message)
+    match = SET_RESOLUTION_PATTERN.match(normalized)
+    if not match:
+        return None
+
+    width, height = (int(value) for value in match.groups())
+    from actions.display import register_display_actions
+
+    register_display_actions()
+    result = request_action(
+        "display.set_resolution",
+        {"width": width, "height": height},
+        details=(
+            f"Changement de résolution demandé par l'utilisateur : "
+            f"{width}x{height}"
+        ),
+    )
+
+    if result["status"] == "success":
+        applied = result["result"]
+        if applied["status"] == "already_set":
+            return f"✅ La résolution est déjà réglée sur {width}x{height}."
+        return f"✅ Résolution de l'écran principal réglée sur {width}x{height}."
+    if result["status"] == "confirmation_required":
+        return (
+            f"🔐 Une confirmation est nécessaire pour passer en "
+            f"{width}x{height}."
+        )
+    if result["status"] == "denied":
+        return "⛔ La permission de modifier la résolution est refusée."
+    return (
+        f"❌ Impossible de régler la résolution sur {width}x{height} : "
+        f"{result.get('message', result['status'])}"
     )
 
 
@@ -608,7 +654,7 @@ def close_one_application(query):
                 "mais sa fenêtre est toujours ouverte."
             )
         if close_details["status"] == "closed":
-            return f"✅ {app['name']} : fenêtre fermée."
+            return f"✅ {app['name']} : application fermée."
         return f"✅ {app['name']} : fermeture demandée."
 
     if close_result["status"] == "confirmation_required":
@@ -765,6 +811,10 @@ def extract_browser_and_research(message):
 
 def route_command(message):
     """Dirige les commandes d'ouverture et de fermeture."""
+
+    resolution_result = set_display_resolution_command(message)
+    if resolution_result is not None:
+        return resolution_result
 
     resolution_routine_result = (
         create_application_launch_routine_command(message)

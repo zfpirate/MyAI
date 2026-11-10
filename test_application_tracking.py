@@ -445,6 +445,134 @@ class ApplicationTrackingTests(unittest.TestCase):
                 "closed_in_background",
             )
 
+    def test_catalog_close_stops_verified_process_tree_when_window_hides(self):
+        root_identity = {
+            "pid": 202,
+            "process_path": "c:\\apps\\discord\\discord.exe",
+            "process_creation_time": 456,
+        }
+        child_identity = {
+            "pid": 303,
+            "process_path": "c:\\apps\\discord\\discord.exe",
+            "process_creation_time": 789,
+        }
+        applications._RUNNING_CATALOG_WINDOWS["discord"] = [{
+            "hwnd": 101,
+            **root_identity,
+            "expected_path": "c:\\apps\\discord\\discord.exe",
+            "expected_publisher": "CN=Discord",
+            "label": "Discord",
+        }]
+        root_process = Mock(pid=202)
+        child_process = Mock(pid=303)
+        root_process.children.return_value = [child_process]
+
+        with (
+            patch.object(
+                applications,
+                "get_window_identity",
+                return_value=root_identity,
+            ),
+            patch.object(applications, "user32") as user32,
+            patch.object(
+                applications,
+                "get_process_identity",
+                side_effect=lambda pid: {
+                    202: root_identity,
+                    303: child_identity,
+                }[pid],
+            ),
+            patch.object(
+                applications,
+                "is_catalog_process_path",
+                return_value=True,
+            ),
+            patch.object(
+                applications,
+                "verify_catalog_process",
+                return_value={"publisher": "CN=Discord"},
+            ),
+            patch.object(
+                applications,
+                "request_window_close",
+                return_value="hidden_in_background",
+            ),
+            patch.object(
+                applications.psutil,
+                "Process",
+                return_value=root_process,
+            ),
+            patch.object(
+                applications.psutil,
+                "wait_procs",
+                return_value=([], []),
+            ) as wait_procs,
+        ):
+            user32.IsWindow.return_value = True
+            result = applications.close_catalog_window({"app_id": "discord"})
+
+        self.assertEqual(result["status"], "closed")
+        child_process.terminate.assert_called_once_with()
+        root_process.terminate.assert_called_once_with()
+        wait_procs.assert_called_once()
+
+    def test_catalog_close_never_terminates_wrong_publisher(self):
+        identity = {
+            "pid": 202,
+            "process_path": "c:\\apps\\discord\\discord.exe",
+            "process_creation_time": 456,
+        }
+        applications._RUNNING_CATALOG_WINDOWS["discord"] = [{
+            "hwnd": 101,
+            **identity,
+            "expected_path": "c:\\apps\\discord\\discord.exe",
+            "expected_publisher": "CN=Discord",
+            "label": "Discord",
+        }]
+        root_process = Mock(pid=202)
+
+        with (
+            patch.object(
+                applications,
+                "get_window_identity",
+                return_value=identity,
+            ),
+            patch.object(applications, "user32") as user32,
+            patch.object(
+                applications,
+                "get_process_identity",
+                return_value=identity,
+            ),
+            patch.object(
+                applications,
+                "is_catalog_process_path",
+                return_value=True,
+            ),
+            patch.object(
+                applications,
+                "verify_catalog_process",
+                side_effect=[
+                    {"publisher": "CN=Discord"},
+                    False,
+                ],
+            ),
+            patch.object(
+                applications,
+                "request_window_close",
+                return_value="hidden_in_background",
+            ),
+            patch.object(
+                applications.psutil,
+                "Process",
+                return_value=root_process,
+            ),
+        ):
+            user32.IsWindow.return_value = True
+            with self.assertRaisesRegex(PermissionError, "processus"):
+                applications.close_catalog_window({"app_id": "discord"})
+
+        root_process.terminate.assert_not_called()
+
     def test_tracked_window_is_restored_and_brought_forward(self):
         with patch.object(applications, "user32") as user32:
             applications.show_tracked_window(101)
@@ -469,6 +597,23 @@ class ApplicationTrackingTests(unittest.TestCase):
 
         self.assertIn("fenêtre fermée", result)
         self.assertIn("reste active en arrière-plan", result)
+
+    def test_close_router_confirms_application_exit(self):
+        discord = {
+            "app_id": "discord",
+            "name": "Discord",
+        }
+        with (
+            patch.object(command_router, "find_application",
+                         return_value={"status": "found", "app": discord}),
+            patch.object(command_router, "request_action", return_value={
+                "status": "success",
+                "result": {"status": "closed"},
+            }),
+        ):
+            result = command_router.close_one_application("discord")
+
+        self.assertIn("Discord : application fermée", result)
 
     def test_multi_application_close_routes_each_target(self):
         with patch.object(

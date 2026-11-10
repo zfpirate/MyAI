@@ -35,6 +35,36 @@ Lancez ensuite l’application :
 python main.py
 ```
 
+## Application Windows et mises à jour
+
+Téléchargez `CAPRI-windows-x64.zip` depuis les [releases GitHub](https://github.com/zfpirate/MyAI/releases),
+extrayez le dossier `CAPRI` dans un emplacement où votre compte peut écrire,
+par exemple `%LOCALAPPDATA%\Programs\CAPRI`, puis lancez `CAPRI.exe`. Dans
+l'onglet **Mises à jour**, CAPRI vérifie les nouvelles releases GitHub et peut
+télécharger, vérifier et installer une nouvelle version. Vos données sont
+stockées séparément dans `%LOCALAPPDATA%\CAPRI\data` et ne sont pas remplacées
+pendant une mise à jour.
+
+Ollama doit toujours être installé et démarré avec le modèle `qwen3:8b`.
+Pour compiler localement l'application Windows, lancez
+`.\build_windows.ps1` depuis PowerShell ; ses dépendances de compilation sont
+séparées dans `requirements-build.txt`. La publication d'un tag `v*` compile
+l'application Windows et ajoute son archive ainsi que son empreinte SHA-256 à
+la release GitHub.
+
+### Ajouter les images de CAPRI
+
+- Placez le logo horizontal au format PNG dans `assets/images/capri-logo.png`
+  (fond transparent recommandé, environ 700 × 240 pixels).
+- Placez l'icône carrée PNG dans `assets/icons/capri.png` (256 × 256 pixels
+  conseillé) ; elle sera utilisée dans la fenêtre et la zone de notification.
+- Pour l'icône du fichier EXE dans l'Explorateur Windows, ajoutez aussi
+  `assets/icons/capri.ico` (multi-résolution, dont 256 × 256).
+
+Relancez `.\build_windows.ps1` après avoir ajouté ou remplacé une image : les
+fichiers du dossier `assets` sont intégrés au paquet et inclus dans les mises
+à jour.
+
 ## Routines de démarrage
 
 Dans l’onglet **Routines**, créez des automatisations ou demandez-les dans le
@@ -42,6 +72,7 @@ chat, par exemple :
 
 - `Au démarrage du PC, lance Valorant et Spotify`
 - `Quand je lance osu, passe la résolution en natif`
+- `Mets la résolution en 1200 par 1080`
 
 Les routines sont enregistrées localement dans la base de données. Le
 démarrage de CAPRI avec Windows se configure avec la case de l’onglet
@@ -63,11 +94,18 @@ haute résolution annoncée par Windows. Vous pouvez activer, désactiver ou
 supprimer une routine depuis l’onglet **Routines**. Les permissions de CAPRI
 restent applicables aux actions automatisées.
 
+Lorsqu’une application vérifiée masque sa fenêtre au lieu de quitter
+(comportement courant pour Discord), la commande `Ferme Discord` arrête aussi
+les processus suivis de cette application après avoir revérifié leur chemin
+et leur éditeur. CAPRI ne prétend pas que l’application est fermée si des
+processus vérifiés restent actifs.
+
 ## Données locales
 
-La mémoire de l’application est conservée dans `data/capri.db`. Cette base est
-ignorée par Git afin de ne pas publier de données personnelles. Elle est créée
-automatiquement au premier lancement sur une nouvelle installation.
+En mode développement, la mémoire est conservée dans `data/capri.db`. Dans
+l'application Windows, elle est stockée dans
+`%LOCALAPPDATA%\CAPRI\data\capri.db` afin que les mises à jour préservent les
+données locales. Ces bases sont ignorées par Git.
 
 ## Dépôt GitHub
 

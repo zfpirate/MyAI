@@ -517,6 +517,109 @@ def register_catalog_window(
     return existing or entries[-1]
 
 
+def terminate_catalog_process_tree(entry, timeout=3):
+    """Arrête l'application masquée et ses processus vérifiés du même éditeur."""
+    try:
+        root = psutil.Process(entry["pid"])
+    except psutil.NoSuchProcess:
+        return True
+
+    root_identity = get_process_identity(entry["pid"])
+    if root_identity is None:
+        return True
+
+    if (
+        root_identity["process_creation_time"]
+        != entry["process_creation_time"]
+        or root_identity["process_path"] != entry["process_path"]
+        or not is_catalog_process_path(
+            root_identity["process_path"],
+            entry["expected_path"],
+        )
+        or not verify_catalog_process(
+            root_identity["process_path"],
+            entry["expected_publisher"],
+            entry["label"],
+        )
+    ):
+        raise PermissionError(
+            "L'identité du processus a changé ; CAPRI ne l'arrêtera pas."
+        )
+
+    candidates = [root]
+    candidates.extend(root.children(recursive=True))
+    verified = []
+    seen_pids = set()
+
+    for process in candidates:
+        if process.pid in seen_pids:
+            continue
+        seen_pids.add(process.pid)
+
+        identity = get_process_identity(process.pid)
+        if identity is None:
+            continue
+        if not is_catalog_process_path(
+            identity["process_path"],
+            entry["expected_path"],
+        ):
+            continue
+        if not verify_catalog_process(
+            identity["process_path"],
+            entry["expected_publisher"],
+            entry["label"],
+        ):
+            continue
+
+        verified.append((process, identity))
+
+    if not any(process.pid == root.pid for process, _identity in verified):
+        if get_process_identity(entry["pid"]) is None:
+            return True
+        raise PermissionError(
+            "CAPRI n'a pas pu revérifier le processus principal."
+        )
+
+    for process, expected_identity in reversed(verified):
+        identity = get_process_identity(process.pid)
+        if identity is None:
+            continue
+        if (
+            identity["process_creation_time"]
+            != expected_identity["process_creation_time"]
+            or identity["process_path"] != expected_identity["process_path"]
+            or not is_catalog_process_path(
+                identity["process_path"],
+                entry["expected_path"],
+            )
+            or not verify_catalog_process(
+                identity["process_path"],
+                entry["expected_publisher"],
+                entry["label"],
+            )
+        ):
+            raise PermissionError(
+                "L'identité d'un processus a changé ; CAPRI a interrompu "
+                "la fermeture."
+            )
+        try:
+            process.terminate()
+        except psutil.NoSuchProcess:
+            continue
+
+    _gone, alive = psutil.wait_procs(
+        [process for process, _identity in verified],
+        timeout=timeout,
+    )
+    if alive:
+        raise RuntimeError(
+            f"{entry['label']} ou l'un de ses processus associés est "
+            "toujours actif après la demande de fermeture."
+        )
+
+    return True
+
+
 def close_catalog_window(params):
     """Demande la fermeture normale d'une fenêtre suivie du catalogue."""
 
@@ -564,6 +667,10 @@ def close_catalog_window(params):
             entry["process_creation_time"],
             entry["process_path"],
         )
+
+        if close_status in {"hidden_in_background", "closed_in_background"}:
+            terminate_catalog_process_tree(entry)
+            close_status = "closed"
 
         return {
             "application": entry["label"],

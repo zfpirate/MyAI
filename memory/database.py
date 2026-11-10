@@ -1,8 +1,19 @@
 
+import os
 import sqlite3
+import sys
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "capri.db"
+if getattr(sys, "frozen", False):
+    local_app_data = Path(
+        os.environ.get(
+            "LOCALAPPDATA",
+            Path.home() / "AppData" / "Local",
+        )
+    )
+    DB_PATH = local_app_data / "CAPRI" / "data" / "capri.db"
+else:
+    DB_PATH = Path(__file__).resolve().parent.parent / "data" / "capri.db"
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -42,9 +53,6 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
-    print("CAPRI MEMORY : base de données opérationnelle.")
-
 
 def add_memory(content, category="general"):
     with get_connection() as db:
