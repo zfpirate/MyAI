@@ -2,6 +2,8 @@ name: Build and publish Windows app
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -22,6 +24,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -36,11 +39,54 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -q
 
-      - name: Verify release version
+      - name: Select release version
         env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
+        shell: pwsh
         run: |
-          python -c "import os; from core.app_info import APP_VERSION; expected = os.environ['RELEASE_TAG'].removeprefix('v'); raise SystemExit(0 if APP_VERSION == expected else f'APP_VERSION {APP_VERSION} must match tag {expected}')"
+          if ($env:RELEASE_TAG_INPUT) {
+            $releaseTag = $env:RELEASE_TAG_INPUT
+          }
+          elseif ($env:GITHUB_REF -eq "refs/heads/main") {
+            $currentVersion = python -c "from core.app_info import APP_VERSION; print(APP_VERSION)"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Impossible de lire la version CAPRI."
+            }
+
+            $versions = @($currentVersion)
+            foreach ($tag in (git tag --list "v*")) {
+              if ($tag -match "^v(\d+\.\d+\.\d+)$") {
+                $versions += $Matches[1]
+              }
+            }
+
+            $latestVersion = $versions |
+              ForEach-Object { [version]$_ } |
+              Sort-Object -Descending |
+              Select-Object -First 1
+            $releaseTag = "v$($latestVersion.Major).$($latestVersion.Minor).$($latestVersion.Build + 1)"
+
+            $appInfoPath = "core/app_info.py"
+            $appInfo = Get-Content -LiteralPath $appInfoPath -Raw
+            $appInfo = [regex]::Replace(
+              $appInfo,
+              'APP_VERSION = "\d+\.\d+\.\d+"',
+              "APP_VERSION = `"$($releaseTag.Substring(1))`"",
+              1
+            )
+            Set-Content -LiteralPath $appInfoPath -Value $appInfo -NoNewline
+          }
+          else {
+            $releaseTag = $env:GITHUB_REF_NAME
+          }
+
+          $expectedVersion = $releaseTag -replace "^v", ""
+          $actualVersion = python -c "from core.app_info import APP_VERSION; print(APP_VERSION)"
+          if ($LASTEXITCODE -ne 0 -or $actualVersion -ne $expectedVersion) {
+            throw "APP_VERSION $actualVersion doit correspondre au tag $releaseTag."
+          }
+
+          "RELEASE_TAG=$releaseTag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build Windows application
         run: .\build_windows.ps1
@@ -48,7 +94,6 @@ jobs:
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         shell: pwsh
         run: |
           $release = gh release view $env:RELEASE_TAG --json tagName 2>$null
@@ -57,6 +102,7 @@ jobs:
               dist/CAPRI-windows-x64.zip `
               dist/CAPRI-windows-x64.zip.sha256 `
               --title "CAPRI $env:RELEASE_TAG" `
+              --target (git rev-parse HEAD) `
               --generate-notes `
               --notes "Téléchargez et extrayez le paquet Windows, puis lancez CAPRI.exe. Ollama et le modèle qwen3:8b sont requis. Les mises à jour peuvent ensuite être installées directement depuis CAPRI."
           }

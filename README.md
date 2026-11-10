@@ -63,7 +63,10 @@ la release GitHub.
 
 Relancez `.\build_windows.ps1` après avoir ajouté ou remplacé une image : les
 fichiers du dossier `assets` sont intégrés au paquet et inclus dans les mises
-à jour.
+à jour. Chaque push sur `main` crée automatiquement une release Windows avec
+un numéro de version patch incrémenté. Les tags `v*` peuvent également être
+compilés directement, et le workflow peut être lancé manuellement pour
+reconstruire une release existante.
 
 ## Routines de démarrage
 

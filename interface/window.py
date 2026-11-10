@@ -1202,7 +1202,12 @@ class CapriWindow(QMainWindow):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=2
+                timeout=2,
+                creationflags=getattr(
+                    subprocess,
+                    "CREATE_NO_WINDOW",
+                    0,
+                ),
             )
 
             if result.returncode == 0:
