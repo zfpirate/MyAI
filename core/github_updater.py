@@ -242,10 +242,7 @@ def download_and_install_update(update, progress_callback=None):
                 "-StartedFile",
                 str(started_file),
             ],
-            creationflags=(
-                getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                | getattr(subprocess, "DETACHED_PROCESS", 0)
-            ),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             close_fds=True,
         )
         deadline = time.monotonic() + 10

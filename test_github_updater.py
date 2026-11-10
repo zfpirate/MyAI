@@ -1,6 +1,7 @@
 import hashlib
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -200,6 +201,18 @@ class GitHubUpdaterTests(unittest.TestCase):
                     "core.github_updater.subprocess.Popen",
                     side_effect=start_helper,
                 ) as popen,
+                patch.object(
+                    subprocess,
+                    "CREATE_NO_WINDOW",
+                    0x08000000,
+                    create=True,
+                ),
+                patch.object(
+                    subprocess,
+                    "DETACHED_PROCESS",
+                    0x00000008,
+                    create=True,
+                ),
             ):
                 result = download_and_install_update({
                     "latest_version": "v0.4.0",
@@ -214,6 +227,10 @@ class GitHubUpdaterTests(unittest.TestCase):
             self.assertEqual(result["status"], "installing")
             command = popen.call_args.args[0]
             self.assertIn("-StartedFile", command)
+            self.assertEqual(
+                popen.call_args.kwargs["creationflags"],
+                subprocess.CREATE_NO_WINDOW,
+            )
 
 
 if __name__ == "__main__":
