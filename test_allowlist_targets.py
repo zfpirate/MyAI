@@ -1,53 +1,52 @@
-
-import win32com.client
-
+import tempfile
+import unittest
 from pathlib import Path
-from security.app_allowlist import ALLOWED_APPS
-from actions.app_catalog import get_catalog_apps
+from unittest.mock import patch
 
-shell = win32com.client.Dispatch("WScript.Shell")
-catalog = get_catalog_apps()
+from actions.catalog_launcher import (
+    is_inside_start_menu,
+    validate_catalog_params,
+)
 
-print("INSPECTION DES APPLICATIONS AUTORISÉES")
-print("=" * 55)
 
-for app_id, config in ALLOWED_APPS.items():
+class AllowlistedTargetTests(unittest.TestCase):
+    def test_catalog_action_accepts_only_an_application_id(self):
+        self.assertTrue(validate_catalog_params({"app_id": "spotify-id"}))
+        self.assertFalse(validate_catalog_params({
+            "app_id": "spotify-id",
+            "target": "C:\\Windows\\System32\\cmd.exe",
+        }))
+        self.assertFalse(validate_catalog_params({"app_id": ""}))
+        self.assertFalse(validate_catalog_params([]))
 
-    if config.get("builtin"):
-        print(f"\n[{app_id}] Application intégrée à CAPRI")
-        continue
+    def test_shortcut_must_be_inside_an_allowed_start_menu(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            allowed = root / "Programs"
+            allowed.mkdir()
+            shortcut = allowed / "Spotify.lnk"
+            shortcut.touch()
+            outside = root / "Spotify.lnk"
+            outside.touch()
 
-    expected_name = config["catalog_name"].casefold()
+            with patch(
+                "actions.catalog_launcher.START_MENU_LOCATIONS",
+                [allowed],
+            ):
+                self.assertTrue(is_inside_start_menu(shortcut))
+                self.assertFalse(is_inside_start_menu(outside))
 
-    matches = [
-        app for app in catalog
-        if expected_name in app["name"].casefold()
-    ]
+    def test_non_shortcut_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "spotify.exe"
+            executable.touch()
+            with patch(
+                "actions.catalog_launcher.START_MENU_LOCATIONS",
+                [root],
+            ):
+                self.assertFalse(is_inside_start_menu(executable))
 
-    print(f"\n[{app_id}] {config['catalog_name']}")
 
-    if not matches:
-        print("  INTROUVABLE DANS LE CATALOGUE")
-        continue
-
-    for app in matches:
-        shortcut_path = Path(app["shortcut_path"])
-
-        print(f"  Nom : {app['name']}")
-        print(f"  Raccourci : {shortcut_path}")
-
-        if shortcut_path.suffix.lower() != ".lnk":
-            print("  Pas un raccourci Windows classique.")
-            continue
-
-        try:
-            shortcut = shell.CreateShortcut(str(shortcut_path))
-
-            print(f"  Cible : {shortcut.TargetPath}")
-            print(f"  Arguments : {shortcut.Arguments}")
-            print(f"  Dossier : {shortcut.WorkingDirectory}")
-
-        except Exception as error:
-            print(f"  ERREUR : {error}")
-
-print("\nInspection terminée. Aucune application lancée.")
+if __name__ == "__main__":
+    unittest.main()

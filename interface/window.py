@@ -5,11 +5,13 @@ import psutil
 from collections import deque
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel,
     QPushButton, QLineEdit, QTextBrowser,
     QVBoxLayout, QHBoxLayout, QFrame,
-    QProgressBar, QStackedWidget, QListWidget, QListWidgetItem
+    QProgressBar, QStackedWidget, QListWidget, QListWidgetItem,
+    QCheckBox, QMenu, QSystemTrayIcon, QStyle,
 )
 
 from core.brain import ask_capri
@@ -18,9 +20,15 @@ from memory.database import list_memories
 from memory.projects import get_projects
 from routines.manager import (
     delete_routine,
+    get_application_launch_triggers,
     list_routines,
+    run_application_launch_routines,
     run_startup_routines,
     set_routine_enabled,
+)
+from routines.windows_startup import (
+    is_windows_startup_enabled,
+    set_windows_startup_enabled,
 )
 
 
@@ -212,13 +220,23 @@ class CapriWindow(QMainWindow):
         self.worker = None
         self.pending_messages = deque()
         self.startup_worker = None
+        self.application_launch_triggers = {}
+        self._active_trigger_processes = set()
+        self._allow_close = False
 
         self.setup_ui()
         self.refresh_system()
+        self.setup_tray_icon()
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_system)
         self.timer.start(2000)
+
+        self.application_launch_timer = QTimer(self)
+        self.application_launch_timer.timeout.connect(
+            self.check_application_launches
+        )
+        self.application_launch_timer.start(2500)
 
         self.thinking_timer = QTimer(self)
         self.thinking_timer.timeout.connect(self.animate_thinking_label)
@@ -475,12 +493,25 @@ class CapriWindow(QMainWindow):
         layout.addWidget(title)
 
         description = QLabel(
-            "Crée des actions qui se déclenchent au démarrage de CAPRI. "
-            "Exemple : « Quand CAPRI démarre, ouvre Spotify et Riot Client »."
+            "Crée des routines au démarrage de CAPRI ou lorsqu'une "
+            "application se lance. Exemple : « Quand CAPRI démarre, ouvre "
+            "Spotify et Riot Client » ou « Quand je lance osu, passe la "
+            "résolution en natif »."
         )
         description.setObjectName("Muted")
         description.setWordWrap(True)
         layout.addWidget(description)
+
+        self.windows_startup_checkbox = QCheckBox(
+            "Démarrer CAPRI avec Windows (en arrière-plan)"
+        )
+        self.windows_startup_checkbox.setChecked(
+            is_windows_startup_enabled()
+        )
+        self.windows_startup_checkbox.toggled.connect(
+            self.toggle_windows_startup
+        )
+        layout.addWidget(self.windows_startup_checkbox)
 
         input_layout = QHBoxLayout()
         self.routine_input = QLineEdit()
@@ -519,6 +550,27 @@ class CapriWindow(QMainWindow):
         if not hasattr(self, "routine_list"):
             return
 
+        if hasattr(self, "windows_startup_checkbox"):
+            self.windows_startup_checkbox.blockSignals(True)
+            self.windows_startup_checkbox.setChecked(
+                is_windows_startup_enabled()
+            )
+            self.windows_startup_checkbox.blockSignals(False)
+
+        try:
+            self.application_launch_triggers = (
+                get_application_launch_triggers()
+            )
+        except Exception as error:
+            self.application_launch_triggers = {}
+            self.routine_status.setText(
+                f"Impossible de surveiller une application : {error}"
+            )
+
+        self._active_trigger_processes = (
+            self.get_active_trigger_processes()
+        )
+
         self.routine_list.clear()
         apps_by_id = {
             app["app_id"]: app["name"]
@@ -526,13 +578,26 @@ class CapriWindow(QMainWindow):
         }
 
         for routine in list_routines():
-            app_names = [
-                apps_by_id.get(app_id, "Application indisponible")
-                for app_id in routine["app_ids"]
-            ]
             state = "Activée" if routine["enabled"] else "Désactivée"
+            if routine["trigger_type"] == "application_launch":
+                trigger_name = apps_by_id.get(
+                    routine["trigger_app_id"],
+                    "Application indisponible",
+                )
+                action_name = (
+                    "Résolution native"
+                    if routine["action_type"] == "native_resolution"
+                    else routine["action_type"]
+                )
+                description = f"Quand {trigger_name} démarre — {action_name}"
+            else:
+                app_names = [
+                    apps_by_id.get(app_id, "Application indisponible")
+                    for app_id in routine["app_ids"]
+                ]
+                description = ", ".join(app_names)
             item = QListWidgetItem(
-                f"{routine['name']} — {', '.join(app_names)} ({state})"
+                f"{routine['name']} — {description} ({state})"
             )
             item.setData(Qt.ItemDataRole.UserRole, routine["id"])
             self.routine_list.addItem(item)
@@ -542,9 +607,14 @@ class CapriWindow(QMainWindow):
         if not text:
             return
 
-        from actions.command_router import create_startup_routine_command
+        from actions.command_router import (
+            create_application_launch_routine_command,
+            create_startup_routine_command,
+        )
 
-        result = create_startup_routine_command(text)
+        result = create_application_launch_routine_command(text)
+        if result is None:
+            result = create_startup_routine_command(text)
         if result is None:
             result = create_startup_routine_command(
                 "Au démarrage, ouvre " + text
@@ -553,7 +623,10 @@ class CapriWindow(QMainWindow):
         self.routine_status.setText(
             result or "Impossible de comprendre cette routine."
         )
-        if result and result.startswith("✅"):
+        if result and (
+            result.startswith("✅")
+            or result.startswith("⚠️ Routine ")
+        ):
             self.routine_input.clear()
             self.refresh_routines()
 
@@ -589,6 +662,154 @@ class CapriWindow(QMainWindow):
         delete_routine(routine["id"])
         self.refresh_routines()
         self.routine_status.setText("Routine supprimée.")
+
+    def toggle_windows_startup(self, enabled):
+        try:
+            set_windows_startup_enabled(enabled)
+            state = "activé" if enabled else "désactivé"
+            self.routine_status.setText(
+                f"Le démarrage automatique de CAPRI avec Windows est {state}."
+            )
+        except Exception as error:
+            self.windows_startup_checkbox.blockSignals(True)
+            self.windows_startup_checkbox.setChecked(not enabled)
+            self.windows_startup_checkbox.blockSignals(False)
+            self.routine_status.setText(
+                f"Impossible de configurer le démarrage Windows : {error}"
+            )
+
+    def setup_tray_icon(self):
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setToolTip("CAPRI — routines actives")
+        self.tray_icon.setIcon(
+            self.style().standardIcon(
+                QStyle.StandardPixmap.SP_ComputerIcon
+            )
+        )
+
+        menu = QMenu(self)
+        open_action = QAction("Ouvrir CAPRI", self)
+        open_action.triggered.connect(self.restore_from_tray)
+        quit_action = QAction("Quitter CAPRI", self)
+        quit_action.triggered.connect(self.quit_from_tray)
+        menu.addAction(open_action)
+        menu.addSeparator()
+        menu.addAction(quit_action)
+        self.tray_icon.setContextMenu(menu)
+        self.tray_icon.activated.connect(self.on_tray_activated)
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray_icon.show()
+        elif "--background" in sys.argv:
+            self.chat.append(
+                "<p>La zone de notification Windows est indisponible ; "
+                "CAPRI reste visible pour éviter de perdre l'accès à la "
+                "fenêtre.</p>"
+            )
+
+    def on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.restore_from_tray()
+
+    def restore_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def quit_from_tray(self):
+        self._allow_close = True
+        self.tray_icon.hide()
+        QApplication.quit()
+
+    def closeEvent(self, event):
+        if self._allow_close or not self.tray_icon.isVisible():
+            event.accept()
+            return
+
+        event.ignore()
+        self.hide()
+        self.tray_icon.showMessage(
+            "CAPRI fonctionne en arrière-plan",
+            "Les routines restent actives. Cliquez sur l'icône CAPRI "
+            "pour rouvrir la fenêtre.",
+            QSystemTrayIcon.MessageIcon.Information,
+            3000,
+        )
+
+    def check_application_launches(self):
+        if not self.application_launch_triggers:
+            return
+
+        running = set()
+        triggered_app_ids = set()
+        try:
+            processes = psutil.process_iter(
+                ["pid", "name", "create_time"]
+            )
+            for process in processes:
+                try:
+                    name = str(
+                        process.info.get("name") or ""
+                    ).casefold()
+                    app_ids = self.application_launch_triggers.get(name)
+                    if not app_ids:
+                        continue
+                    identity = (
+                        process.info["pid"],
+                        process.info.get("create_time"),
+                    )
+                    running.add(identity)
+                    if identity not in self._active_trigger_processes:
+                        triggered_app_ids.update(app_ids)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except Exception as error:
+            self.chat.append(
+                f"<p style='color:#D94B4B'>"
+                f"Erreur de surveillance des applications : "
+                f"{to_html(error)}</p>"
+            )
+            return
+
+        self._active_trigger_processes = running
+        if not triggered_app_ids:
+            return
+
+        try:
+            results = run_application_launch_routines(triggered_app_ids)
+        except Exception as error:
+            self.chat.append(
+                f"<p style='color:#D94B4B'>"
+                f"Erreur de routine au lancement : {to_html(error)}</p>"
+            )
+            return
+
+        for result in results:
+            if result["status"] == "success":
+                message = (
+                    f"✅ Routine « {result['name']} » exécutée."
+                )
+            else:
+                message = (
+                    f"⚠️ Routine « {result['name']} » : "
+                    f"{result['message'] or result['status']}"
+                )
+            self.chat.append(f"<p>{to_html(message)}</p>")
+
+    def get_active_trigger_processes(self):
+        active = set()
+        for process in psutil.process_iter(
+            ["pid", "name", "create_time"]
+        ):
+            try:
+                name = str(process.info.get("name") or "").casefold()
+                if name in self.application_launch_triggers:
+                    active.add((
+                        process.info["pid"],
+                        process.info.get("create_time"),
+                    ))
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return active
 
     def start_enabled_routines(self):
         if self.startup_worker is not None:
@@ -833,14 +1054,22 @@ class CapriWindow(QMainWindow):
             )
 
 
-def launch():
+def launch(background=False):
 
     scan_installed_apps()
+    if background:
+        sys.argv = [
+            argument for argument in sys.argv
+            if argument != "--background"
+        ]
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLE)
 
     window = CapriWindow()
-    window.show()
+    if background and QSystemTrayIcon.isSystemTrayAvailable():
+        window.hide()
+    else:
+        window.show()
     QTimer.singleShot(800, window.start_enabled_routines)
 
     sys.exit(app.exec())

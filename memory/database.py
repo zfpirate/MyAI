@@ -5,10 +5,18 @@ from pathlib import Path
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "capri.db"
 
 
+class _ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def get_connection():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    connection = sqlite3.connect(DB_PATH)
+    connection = sqlite3.connect(DB_PATH, factory=_ClosingConnection)
     connection.row_factory = sqlite3.Row
 
     return connection

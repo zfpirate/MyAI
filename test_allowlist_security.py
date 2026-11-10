@@ -1,38 +1,46 @@
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from actions.app_catalog import get_catalog_apps
-from actions.catalog_launcher import verify_shortcut
-from security.app_allowlist import ALLOWED_BUILTINS
+from actions.catalog_launcher import (
+    BLOCKED_TARGET_NAMES,
+    inspect_shortcut,
+)
 
-apps = get_catalog_apps()
 
-print("TEST DE LA LISTE BLANCHE")
-print("=" * 55)
+class ShortcutAllowlistSecurityTests(unittest.TestCase):
+    def test_command_interpreters_are_blocked(self):
+        for name in (
+            "cmd.exe",
+            "powershell.exe",
+            "python.exe",
+            "wscript.exe",
+            "rundll32.exe",
+        ):
+            with self.subTest(name=name):
+                self.assertIn(name, BLOCKED_TARGET_NAMES)
 
-success = 0
-failed = 0
+    def test_shortcut_cannot_target_a_command_interpreter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "python.exe"
+            target.touch()
+            shortcut = SimpleNamespace(
+                TargetPath=str(target),
+                Arguments="",
+                WorkingDirectory=directory,
+            )
+            shell = SimpleNamespace(
+                CreateShortcut=lambda _path: shortcut,
+            )
+            with patch(
+                "actions.catalog_launcher.win32com.client.Dispatch",
+                return_value=shell,
+            ):
+                with self.assertRaisesRegex(PermissionError, "bloqué"):
+                    inspect_shortcut(Path(directory) / "untrusted.lnk")
 
-for app in apps:
-    name = app["name"]
-    shortcut = app["shortcut_path"]
 
-    if name in ALLOWED_BUILTINS.values():
-        print(f"[OK] {name} : application intégrée")
-        success += 1
-        continue
-
-    try:
-        config, target = verify_shortcut(shortcut, name)
-
-        print(f"[OK] {name}")
-        print(f"     Exécutable : {target}")
-        success += 1
-
-    except Exception as error:
-        print(f"[REFUS] {name} : {error}")
-        failed += 1
-
-print("\n" + "=" * 55)
-print(f"Applications vérifiées : {success}")
-print(f"Applications refusées  : {failed}")
-print("Aucune application n'a été lancée.")
-
+if __name__ == "__main__":
+    unittest.main()

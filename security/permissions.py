@@ -13,6 +13,12 @@ PERMISSIONS = {
         "default": ALLOW,
     },
 
+    "display.change_resolution": {
+        "label": "Modifier la résolution de l'écran",
+        "description": "Changer la résolution de l'écran principal.",
+        "default": ALLOW,
+    },
+
     "apps.launch": {
         "label": "Lancer des applications",
         "description": "Lancer uniquement les applications autorisées.",

@@ -1,14 +1,21 @@
+import unittest
+from unittest.mock import patch
 
 import core.brain as brain
 
-# Remplace temporairement le routeur par un faux résultat.
-# Aucun programme Windows ne sera lancé.
-brain.route_command = lambda message: "ROUTEUR CONNECTÉ"
 
-result = brain.ask_capri("ouvre Discord")
+class BrainCommandRouterTests(unittest.TestCase):
+    def test_local_command_result_is_returned_without_calling_ollama(self):
+        with patch.object(
+            brain,
+            "route_command",
+            return_value="ROUTEUR CONNECTÉ",
+        ) as route_command:
+            result = brain.ask_capri("ouvre Discord")
 
-print("Réponse de CAPRI :", result)
+        self.assertEqual(result, "ROUTEUR CONNECTÉ")
+        route_command.assert_called_once_with("ouvre Discord")
 
-assert result == "ROUTEUR CONNECTÉ"
 
-print("TEST RÉUSSI")
+if __name__ == "__main__":
+    unittest.main()

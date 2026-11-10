@@ -37,15 +37,31 @@ python main.py
 
 ## Routines de démarrage
 
-Dans l’onglet **Routines**, saisissez les applications à ouvrir, par exemple
-`Spotify et Riot Client`, puis créez la routine. Vous pouvez aussi demander dans
-le chat : `Quand CAPRI démarre, ouvre Spotify et Riot Client`.
+Dans l’onglet **Routines**, créez des automatisations ou demandez-les dans le
+chat, par exemple :
 
-Les routines sont enregistrées localement dans la base de données et lancées
-au prochain démarrage de CAPRI. Vous pouvez les activer, les désactiver ou les
-supprimer depuis l’onglet **Routines**. Une routine ne contourne pas les
-permissions : toute action nécessitant une confirmation n’est pas approuvée
-automatiquement.
+- `Au démarrage du PC, lance Valorant et Spotify`
+- `Quand je lance osu, passe la résolution en natif`
+
+Les routines sont enregistrées localement dans la base de données. Le
+démarrage de CAPRI avec Windows se configure avec la case de l’onglet
+**Routines** ; CAPRI démarre alors sans fenêtre ni console, reste accessible
+dans la zone de notification et surveille les applications. Fermer la fenêtre
+la réduit dans cette zone ; choisissez **Quitter CAPRI** dans son menu pour
+arrêter le processus. Un fichier `.exe` n’est pas nécessaire : le raccourci de
+démarrage lance l’interpréteur Python sans fenêtre de console.
+
+La commande `Au démarrage du PC, lance ...` active aussi automatiquement le
+démarrage de CAPRI avec Windows. Si cette configuration échoue, CAPRI indique
+explicitement l’erreur et conserve la routine créée.
+
+Les routines au démarrage de CAPRI lancent les applications via leurs
+raccourcis vérifiés du menu Démarrer. Les routines déclenchées par une
+application surveillent le processus correspondant au raccourci vérifié.
+L’action de résolution applique à l’écran principal le mode ayant la plus
+haute résolution annoncée par Windows. Vous pouvez activer, désactiver ou
+supprimer une routine depuis l’onglet **Routines**. Les permissions de CAPRI
+restent applicables aux actions automatisées.
 
 ## Données locales
 

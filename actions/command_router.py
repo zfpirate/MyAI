@@ -106,13 +106,38 @@ STARTUP_ROUTINE_PATTERNS = [
     r"^(?:quand|lorsque)\s+(?:capri|elle|tu)\s+(?:se\s+)?"
     r"(?:lance|demarre)(?:\s+au\s+demarrage)?\s*"
     r"(?:elle\s+)?(?:ouvre|lance|demarre)\s+",
-    r"^(?:au\s+demarrage(?:\s+de\s+capri)?|"
-    r"au\s+lancement(?:\s+de\s+capri)?)\s*"
+    r"^(?:capri\s+)?(?:au\s+demarrage"
+    r"(?:\s+(?:de\s+capri|du\s+pc))?|"
+    r"au\s+lancement(?:\s+(?:de\s+capri|du\s+pc))?)\s*"
     r"(?:ouvre|lance|demarre)\s+",
     r"^(?:cree|creer|ajoute|ajouter)\s+(?:une\s+)?routine\s+"
     r"(?:au\s+demarrage\s*)?(?:quand\s+capri\s+demarre\s*)?"
     r"(?:ouvre|lance|demarre)\s+",
+    r"^(?:(?:capri\s+)?(?:(?:est\s+ce\s+que\s+)?tu\s+peux|"
+    r"peux\s+tu|pourrais\s+tu)\s+)?"
+    r"(?:cree|creer|ajoute|ajouter)\s+(?:moi\s+)?"
+    r"(?:une\s+)?routine\s+"
+    r"(?:(?:pour\s+)?(?:au\s+)?demarrage"
+    r"(?:\s+(?:du\s+pc|de\s+windows|de\s+capri))?\s*)?"
+    r"(?:(?:qui|pour)\s+)?"
+    r"(?:ouvre|ouvrir|lance|lancer|demarre|demarrer)\s+",
 ]
+
+APPLICATION_LAUNCH_RESOLUTION_PATTERN = re.compile(
+    r"^(?:(?:capri\s+)?(?:(?:est\s+ce\s+que\s+)?tu\s+peux|"
+    r"peux\s+tu|pourrais\s+tu)\s+)?"
+    r"(?:(?:cree|creer|ajoute|ajouter)\s+(?:moi\s+)?"
+    r"(?:une\s+)?routine\s*:?\s*(?:qui\s+)?)?"
+    r"(?:capri\s+)?(?:pour\s+)?(?:quand|lorsque)\s+(?:je\s+)?"
+    r"(?:lance|demarre)\s+(.+?)\s+"
+    r"(?:change|mets?|regle|passe)\s+"
+    r"(?:(?:la|les)\s+)?(?:resolution|res)\b"
+    r".*\b(?:natif|native)\b"
+)
+
+WINDOWS_STARTUP_ROUTINE_PATTERN = re.compile(
+    r"\bau\s+demarrage\s+du\s+pc\b"
+)
 
 
 def normalize(text):
@@ -229,6 +254,9 @@ def extract_multiple_queries_from_close(message):
 def create_startup_routine_command(message):
     """Crée une routine persistante à partir d'une demande de démarrage."""
     normalized = normalize(message)
+    starts_with_windows = bool(
+        WINDOWS_STARTUP_ROUTINE_PATTERN.search(normalized)
+    )
 
     app_text = None
     for pattern in STARTUP_ROUTINE_PATTERNS:
@@ -264,9 +292,53 @@ def create_startup_routine_command(message):
         [app["app_id"] for app in apps],
     )
 
+    startup_message = ""
+    if starts_with_windows:
+        from routines.windows_startup import set_windows_startup_enabled
+
+        try:
+            set_windows_startup_enabled(True)
+        except Exception as error:
+            return (
+                f"⚠️ Routine « {routine_name} » créée, mais le démarrage "
+                f"automatique de CAPRI n'a pas pu être activé : {error}"
+            )
+        startup_message = " CAPRI démarrera aussi avec Windows, en arrière-plan."
+
     return (
         f"✅ Routine « {routine_name} » créée et activée. "
         "Elle s'exécutera au prochain démarrage de CAPRI."
+        f"{startup_message}"
+    )
+
+
+def create_application_launch_routine_command(message):
+    """Crée une routine de résolution déclenchée par le lancement d'une app."""
+    normalized = normalize(message)
+    match = APPLICATION_LAUNCH_RESOLUTION_PATTERN.match(normalized)
+    if not match:
+        return None
+
+    trigger_query = clean_query(match.group(1))
+    result = find_application(trigger_query)
+    if result["status"] == "not_found":
+        return f"❌ {trigger_query} : application non reconnue."
+    if result["status"] == "ambiguous":
+        names = ", ".join(app["name"] for app in result["matches"])
+        return f"❓ {trigger_query} : plusieurs possibilités ({names})."
+
+    app = result["app"]
+    routine_name = f"Quand {app['name']} démarre : résolution native"
+    from routines.manager import save_application_launch_routine
+
+    save_application_launch_routine(
+        routine_name,
+        app["app_id"],
+        "native_resolution",
+    )
+    return (
+        f"✅ Routine « {routine_name} » créée et activée. "
+        f"La résolution native sera appliquée quand {app['name']} démarre."
     )
 
 
@@ -693,6 +765,12 @@ def extract_browser_and_research(message):
 
 def route_command(message):
     """Dirige les commandes d'ouverture et de fermeture."""
+
+    resolution_routine_result = (
+        create_application_launch_routine_command(message)
+    )
+    if resolution_routine_result is not None:
+        return resolution_routine_result
 
     routine_result = create_startup_routine_command(message)
     if routine_result is not None:

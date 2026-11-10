@@ -1,26 +1,51 @@
+import unittest
+from unittest.mock import patch
 
-import sys
+from security import confirmation
 
-from PySide6.QtWidgets import QApplication
-from security.confirmation import create_confirmation_request
-from interface.confirmation_dialog import ConfirmationDialog
 
-app = QApplication(sys.argv)
+class ConfirmationRequestTests(unittest.TestCase):
+    def setUp(self):
+        confirmation._pending_requests.clear()
 
-request = create_confirmation_request(
-    "apps.close",
-    "Fermeture de Notepad"
-)
+    def tearDown(self):
+        confirmation._pending_requests.clear()
 
-if request is None:
-    print("Impossible de créer la demande.")
-    sys.exit(1)
+    def test_confirmation_requires_permission_and_can_be_approved_once(self):
+        with (
+            patch(
+                "security.confirmation.check_permission",
+                return_value="needs_confirmation",
+            ),
+            patch("security.confirmation.log_activity"),
+        ):
+            request = confirmation.create_confirmation_request(
+                "apps.close",
+                "Fermer Spotify",
+            )
+            self.assertIsNotNone(request)
+            self.assertTrue(
+                confirmation.resolve_confirmation_request(
+                    request["id"],
+                    True,
+                )
+            )
+            self.assertFalse(
+                confirmation.resolve_confirmation_request(
+                    request["id"],
+                    True,
+                )
+            )
 
-dialog = ConfirmationDialog(request)
+    def test_confirmation_is_not_created_without_confirmation_permission(self):
+        with patch(
+            "security.confirmation.check_permission",
+            return_value="denied",
+        ):
+            self.assertIsNone(
+                confirmation.create_confirmation_request("apps.close")
+            )
 
-result = dialog.exec()
 
-print("Autorisation :", dialog.approved)
-print("Fenêtre fermée :", result)
-
-sys.exit(0)
+if __name__ == "__main__":
+    unittest.main()

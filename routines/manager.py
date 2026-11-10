@@ -1,4 +1,4 @@
-"""Stockage et exécution des routines de démarrage de CAPRI."""
+"""Stockage et exécution des routines automatiques de CAPRI."""
 
 import json
 from contextlib import closing, contextmanager
@@ -21,10 +21,23 @@ def init_routines():
                 name TEXT NOT NULL UNIQUE,
                 trigger_type TEXT NOT NULL,
                 app_ids TEXT NOT NULL,
+                trigger_app_id TEXT,
+                action_type TEXT NOT NULL DEFAULT 'launch_apps',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        columns = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(routines)").fetchall()
+        }
+        if "trigger_app_id" not in columns:
+            db.execute("ALTER TABLE routines ADD COLUMN trigger_app_id TEXT")
+        if "action_type" not in columns:
+            db.execute(
+                "ALTER TABLE routines ADD COLUMN action_type TEXT "
+                "NOT NULL DEFAULT 'launch_apps'"
+            )
 
 
 def list_routines():
@@ -32,7 +45,8 @@ def list_routines():
 
     with _connection() as db:
         rows = db.execute("""
-            SELECT id, name, trigger_type, app_ids, enabled, created_at
+            SELECT id, name, trigger_type, app_ids, trigger_app_id,
+                   action_type, enabled, created_at
             FROM routines
             ORDER BY id DESC
         """).fetchall()
@@ -43,6 +57,8 @@ def list_routines():
             "name": row["name"],
             "trigger_type": row["trigger_type"],
             "app_ids": json.loads(row["app_ids"]),
+            "trigger_app_id": row["trigger_app_id"],
+            "action_type": row["action_type"],
             "enabled": bool(row["enabled"]),
             "created_at": row["created_at"],
         }
@@ -73,13 +89,54 @@ def save_startup_routine(name, app_ids):
     init_routines()
     with _connection() as db:
         db.execute("""
-            INSERT INTO routines (name, trigger_type, app_ids, enabled)
-            VALUES (?, 'startup', ?, 1)
+            INSERT INTO routines
+                (name, trigger_type, app_ids, trigger_app_id, action_type,
+                 enabled)
+            VALUES (?, 'startup', ?, NULL, 'launch_apps', 1)
             ON CONFLICT(name) DO UPDATE SET
                 trigger_type = 'startup',
                 app_ids = excluded.app_ids,
+                trigger_app_id = NULL,
+                action_type = 'launch_apps',
                 enabled = 1
         """, (name.strip(), json.dumps(unique_app_ids)))
+
+        row = db.execute(
+            "SELECT id FROM routines WHERE name = ?",
+            (name.strip(),),
+        ).fetchone()
+
+    return row["id"]
+
+
+def save_application_launch_routine(name, trigger_app_id, action_type):
+    """Crée une routine déclenchée par le lancement vérifié d'une application."""
+    from actions.app_catalog import get_catalog_app
+
+    if not isinstance(name, str) or not name.strip() or len(name) > 160:
+        raise ValueError("Nom de routine invalide.")
+    if (
+        not isinstance(trigger_app_id, str)
+        or get_catalog_app(trigger_app_id) is None
+    ):
+        raise ValueError("Application déclencheur inconnue.")
+    if action_type != "native_resolution":
+        raise ValueError("Action de routine inconnue.")
+
+    init_routines()
+    with _connection() as db:
+        db.execute("""
+            INSERT INTO routines
+                (name, trigger_type, app_ids, trigger_app_id, action_type,
+                 enabled)
+            VALUES (?, 'application_launch', '[]', ?, ?, 1)
+            ON CONFLICT(name) DO UPDATE SET
+                trigger_type = 'application_launch',
+                app_ids = '[]',
+                trigger_app_id = excluded.trigger_app_id,
+                action_type = excluded.action_type,
+                enabled = 1
+        """, (name.strip(), trigger_app_id, action_type))
 
         row = db.execute(
             "SELECT id FROM routines WHERE name = ?",
@@ -163,5 +220,65 @@ def run_startup_routines():
                 })
 
         results.append(routine_result)
+
+    return results
+
+
+def get_application_launch_triggers():
+    """Retourne les noms vérifiés des processus surveillés par les routines."""
+    from actions.app_catalog import get_catalog_app
+    from actions.catalog_launcher import verify_shortcut
+
+    triggers = {}
+    for routine in list_routines():
+        if (
+            not routine["enabled"]
+            or routine["trigger_type"] != "application_launch"
+            or not routine["trigger_app_id"]
+        ):
+            continue
+
+        app = get_catalog_app(routine["trigger_app_id"])
+        if app is None:
+            continue
+        shortcut, _signature = verify_shortcut(
+            app["shortcut_path"],
+            app["name"],
+        )
+        process_name = shortcut["target"].name.casefold()
+        triggers.setdefault(process_name, set()).add(routine["trigger_app_id"])
+
+    return triggers
+
+
+def run_application_launch_routines(app_ids):
+    """Exécute les routines activées correspondant aux applications lancées."""
+    from actions.display import register_display_actions
+    from security.action_manager import request_action
+
+    register_display_actions()
+    results = []
+    for routine in list_routines():
+        if (
+            not routine["enabled"]
+            or routine["trigger_type"] != "application_launch"
+            or routine["trigger_app_id"] not in app_ids
+        ):
+            continue
+
+        if routine["action_type"] == "native_resolution":
+            result = request_action(
+                "display.set_native_resolution",
+                {},
+                details=(
+                    f"Routine « {routine['name']} » après le lancement "
+                    "de son application"
+                ),
+            )
+            results.append({
+                "name": routine["name"],
+                "status": result["status"],
+                "message": result.get("message", ""),
+            })
 
     return results
