@@ -214,6 +214,7 @@ class StartupRoutineWorker(QThread):
 class UpdateWorker(QThread):
     completed = Signal(object)
     failed = Signal(str)
+    progress = Signal(int, int, str)
 
     def __init__(self, mode, update=None):
         super().__init__()
@@ -225,7 +226,10 @@ class UpdateWorker(QThread):
             if self.mode == "check":
                 result = check_for_updates()
             else:
-                result = download_and_install_update(self.update)
+                result = download_and_install_update(
+                    self.update,
+                    progress_callback=self.progress.emit,
+                )
             self.completed.emit(result)
         except Exception as error:
             self.failed.emit(str(error))
@@ -618,6 +622,13 @@ class CapriWindow(QMainWindow):
         self.update_status = QLabel("Aucune vérification effectuée.")
         self.update_status.setWordWrap(True)
         layout.addWidget(self.update_status)
+
+        self.update_progress = QProgressBar()
+        self.update_progress.setRange(0, 100)
+        self.update_progress.setValue(0)
+        self.update_progress.setFormat("%p%")
+        self.update_progress.hide()
+        layout.addWidget(self.update_progress)
 
         self.update_button = QPushButton("Vérifier les mises à jour")
         self.update_button.clicked.connect(self.check_for_updates)
@@ -1034,14 +1045,42 @@ class CapriWindow(QMainWindow):
         self.update_status.setText(
             f"Téléchargement sécurisé de CAPRI {update['latest_version']}…"
         )
+        self.update_progress.setRange(0, 100)
+        self.update_progress.setValue(0)
+        self.update_progress.show()
         self.update_worker = UpdateWorker("install", update)
+        self.update_worker.progress.connect(
+            self.update_download_progress
+        )
         self.update_worker.completed.connect(self.update_install_completed)
         self.update_worker.failed.connect(self.update_install_failed)
         self.update_worker.finished.connect(self.update_worker.deleteLater)
         self.update_worker.finished.connect(self.clear_update_worker)
         self.update_worker.start()
 
+    def update_download_progress(self, downloaded, total, asset_name):
+        asset_label = (
+            "du paquet Windows"
+            if asset_name == "CAPRI-windows-x64.zip"
+            else "de l'empreinte de vérification"
+        )
+        if total > 0:
+            percent = min(100, downloaded * 100 // total)
+            self.update_progress.setRange(0, 100)
+            self.update_progress.setValue(percent)
+            self.update_status.setText(
+                f"Téléchargement {asset_label} : {percent} % "
+                f"({downloaded // (1024 * 1024)} / "
+                f"{total // (1024 * 1024)} Mo)…"
+            )
+        else:
+            self.update_progress.setRange(0, 0)
+            self.update_status.setText(
+                f"Téléchargement {asset_label}…"
+            )
+
     def update_install_completed(self, result):
+        self.update_progress.hide()
         self.update_button.setText("Fermeture de CAPRI…")
         self.update_status.setText(
             f"CAPRI {result['version']} est téléchargée. "
@@ -1051,6 +1090,7 @@ class CapriWindow(QMainWindow):
         QTimer.singleShot(500, QApplication.quit)
 
     def update_install_failed(self, error):
+        self.update_progress.hide()
         self.update_button.setEnabled(True)
         self.update_button.setText("Vérifier les mises à jour")
         self.update_status.setText(f"Mise à jour annulée : {error}")

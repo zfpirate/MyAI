@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory = $true)][string]$ExpectedSha256,
     [Parameter(Mandatory = $true)][string]$InstallDirectory,
     [Parameter(Mandatory = $true)][string]$StagingDirectory,
-    [Parameter(Mandatory = $true)][string]$ExecutableName
+    [Parameter(Mandatory = $true)][string]$ExecutableName,
+    [Parameter(Mandatory = $true)][string]$StartedFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,6 +15,8 @@ $executablePath = Join-Path $InstallDirectory $ExecutableName
 $movedOldApplication = $false
 
 try {
+    Set-Content -LiteralPath $StartedFile -Value "started" -Encoding ASCII
+
     $deadline = (Get-Date).AddMinutes(2)
     while (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
         if ((Get-Date) -ge $deadline) {
@@ -68,4 +71,5 @@ finally {
     Remove-Item -LiteralPath $ArchivePath -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath "$ArchivePath.sha256" -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $StagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $StartedFile -Force -ErrorAction SilentlyContinue
 }

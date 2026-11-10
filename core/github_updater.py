@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -118,7 +119,7 @@ def validate_update_archive(archive_path):
         raise ValueError("L'archive ne contient pas CAPRI.exe.")
 
 
-def _download_asset(url, destination):
+def _download_asset(url, destination, progress_callback=None):
     size = 0
     response = requests.get(
         url,
@@ -128,6 +129,15 @@ def _download_asset(url, destination):
     )
     response.raise_for_status()
     with response, destination.open("wb") as downloaded:
+        content_length = response.headers.get("Content-Length")
+        try:
+            total_size = int(content_length) if content_length else -1
+        except ValueError:
+            total_size = -1
+
+        if progress_callback:
+            progress_callback(0, total_size, destination.name)
+
         for chunk in response.iter_content(chunk_size=1024 * 1024):
             if not chunk:
                 continue
@@ -135,9 +145,11 @@ def _download_asset(url, destination):
             if size > MAX_DOWNLOAD_SIZE:
                 raise ValueError("Le téléchargement dépasse la taille maximale.")
             downloaded.write(chunk)
+            if progress_callback:
+                progress_callback(size, total_size, destination.name)
 
 
-def download_and_install_update(update):
+def download_and_install_update(update, progress_callback=None):
     """Download a release archive and hand off replacement to PowerShell."""
     if os.name != "nt" or not getattr(sys, "frozen", False):
         raise RuntimeError(
@@ -168,10 +180,13 @@ def download_and_install_update(update):
     archive_path = update_directory / "CAPRI-windows-x64.zip"
     checksum_path = update_directory / "CAPRI-windows-x64.zip.sha256"
     helper_script = update_directory / "update_windows.ps1"
+    started_file = update_directory / "update_started"
+    helper_process = None
+    helper_started = False
 
     try:
-        _download_asset(archive_url, archive_path)
-        _download_asset(checksum_url, checksum_path)
+        _download_asset(archive_url, archive_path, progress_callback)
+        _download_asset(checksum_url, checksum_path, progress_callback)
 
         checksum_text = checksum_path.read_text(encoding="utf-8")
         expected = re.match(r"^\s*([a-fA-F0-9]{64})(?:\s+[*]?.*)?\s*$",
@@ -195,12 +210,13 @@ def download_and_install_update(update):
             raise FileNotFoundError("Le script de mise à jour de Windows est absent.")
 
         shutil.copyfile(script, helper_script)
+        started_file.unlink(missing_ok=True)
 
         powershell = shutil.which("powershell.exe")
         if not powershell:
             raise RuntimeError("Windows PowerShell est introuvable.")
 
-        subprocess.Popen(
+        helper_process = subprocess.Popen(
             [
                 powershell,
                 "-NoProfile",
@@ -223,6 +239,8 @@ def download_and_install_update(update):
                 str(staging_directory),
                 "-ExecutableName",
                 "CAPRI.exe",
+                "-StartedFile",
+                str(started_file),
             ],
             creationflags=(
                 getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -230,11 +248,39 @@ def download_and_install_update(update):
             ),
             close_fds=True,
         )
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if started_file.is_file():
+                helper_started = True
+                break
+            if helper_process.poll() is not None:
+                raise RuntimeError(
+                    "Le programme de mise à jour s'est fermé avant de "
+                    "démarrer. CAPRI reste ouverte."
+                )
+            time.sleep(0.1)
+        else:
+            raise RuntimeError(
+                "Le programme de mise à jour n'a pas démarré. "
+                "CAPRI reste ouverte."
+            )
     except Exception:
-        shutil.rmtree(staging_directory, ignore_errors=True)
-        archive_path.unlink(missing_ok=True)
-        checksum_path.unlink(missing_ok=True)
-        helper_script.unlink(missing_ok=True)
+        if not helper_started:
+            if (
+                helper_process is not None
+                and helper_process.poll() is None
+            ):
+                helper_process.terminate()
+                try:
+                    helper_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    helper_process.kill()
+                    helper_process.wait()
+            shutil.rmtree(staging_directory, ignore_errors=True)
+            archive_path.unlink(missing_ok=True)
+            checksum_path.unlink(missing_ok=True)
+            helper_script.unlink(missing_ok=True)
+            started_file.unlink(missing_ok=True)
         raise
 
     return {"status": "installing", "version": update["latest_version"]}
